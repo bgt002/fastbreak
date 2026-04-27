@@ -1,0 +1,25 @@
+{
+  "expo": {
+    "name": "FastBreak",
+    "slug": "fastbreak",
+    "scheme": "fastbreak",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#050B14",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": false
+    },
+    "android": {
+      "edgeToEdgeEnabled": true
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "single"
+    },
+    "plugins": [
+      "expo-font"
+    ]
+  }
+}
