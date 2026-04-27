@@ -80,6 +80,12 @@ function GameCard({ game, onPress }: { game: NbaGame; onPress: () => void }) {
   const isFinal = state === "final";
   const clockLabel = getGameClockLabel(game);
 
+  const showWinnerColors = isFinal || isLive;
+  const homeWinning = showWinnerColors && game.home_team_score > game.visitor_team_score;
+  const visitorWinning = showWinnerColors && game.visitor_team_score > game.home_team_score;
+  const homeLosing = showWinnerColors && game.home_team_score < game.visitor_team_score;
+  const visitorLosing = showWinnerColors && game.visitor_team_score < game.home_team_score;
+
   return (
     <Pressable
       accessibilityRole="button"
@@ -94,9 +100,27 @@ function GameCard({ game, onPress }: { game: NbaGame; onPress: () => void }) {
             <Text style={styles.tipTime}>{clockLabel}</Text>
           ) : (
             <View style={[styles.scoreRow, isFinal && styles.finalScoreRow]}>
-              <Text style={[styles.score, isFinal && styles.finalScore]}>{game.visitor_team_score}</Text>
+              <Text
+                style={[
+                  styles.score,
+                  isFinal && styles.finalScore,
+                  visitorWinning && styles.scoreWin,
+                  visitorLosing && styles.scoreLoss
+                ]}
+              >
+                {game.visitor_team_score}
+              </Text>
               {isLive ? <Text style={styles.scoreSeparator}>:</Text> : null}
-              <Text style={[styles.score, isLive && styles.scoreLeader, isFinal && styles.finalScore]}>{game.home_team_score}</Text>
+              <Text
+                style={[
+                  styles.score,
+                  isFinal && styles.finalScore,
+                  homeWinning && styles.scoreWin,
+                  homeLosing && styles.scoreLoss
+                ]}
+              >
+                {game.home_team_score}
+              </Text>
             </View>
           )}
           {game.postseason ? (
@@ -281,8 +305,11 @@ const styles = StyleSheet.create({
     letterSpacing: 0,
     lineHeight: 26
   },
-  scoreLeader: {
-    color: colors.secondary
+  scoreWin: {
+    color: colors.win
+  },
+  scoreLoss: {
+    color: colors.loss
   },
   finalScore: {
     fontSize: 19,

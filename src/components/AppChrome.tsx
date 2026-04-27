@@ -1,12 +1,9 @@
 import Ionicons from "@expo/vector-icons/Ionicons";
 import type { PropsWithChildren } from "react";
-import { Image, Platform, Pressable, SafeAreaView, StatusBar as NativeStatusBar, StyleSheet, Text, View } from "react-native";
+import { Platform, Pressable, SafeAreaView, StatusBar as NativeStatusBar, StyleSheet, Text, View } from "react-native";
 
 import { navItems, type NavItem, type TabId } from "../navigation";
 import { colors, fonts, spacing } from "../theme";
-
-const PROFILE_IMAGE =
-  "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=160&q=80";
 
 type AppChromeProps = PropsWithChildren<{
   activeTab: TabId;
@@ -32,12 +29,6 @@ function TopBar() {
         <View style={styles.brandRow}>
           <Ionicons color={colors.secondary} name="basketball-outline" size={20} />
           <Text style={styles.brandText}>Fastbreak</Text>
-        </View>
-        <View style={styles.topActions}>
-          <Pressable accessibilityLabel="Search" accessibilityRole="button" hitSlop={10} style={styles.iconButton}>
-            <Ionicons color="#A5ACB8" name="search" size={20} />
-          </Pressable>
-          <Image accessibilityLabel="User profile" source={{ uri: PROFILE_IMAGE }} style={styles.avatar} />
         </View>
       </View>
     </View>
@@ -126,24 +117,6 @@ const styles = StyleSheet.create({
     lineHeight: 19,
     textTransform: "uppercase",
     transform: [{ skewX: "-8deg" }]
-  },
-  topActions: {
-    alignItems: "center",
-    flexDirection: "row",
-    gap: 12
-  },
-  iconButton: {
-    alignItems: "center",
-    height: 34,
-    justifyContent: "center",
-    width: 34
-  },
-  avatar: {
-    borderColor: "rgba(255, 107, 0, 0.38)",
-    borderRadius: 14,
-    borderWidth: 1,
-    height: 28,
-    width: 28
   },
   bottomNav: {
     backgroundColor: "rgba(14,30,54,0.96)",

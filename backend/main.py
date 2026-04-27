@@ -9,6 +9,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from nba_api.stats.endpoints import (
     boxscoretraditionalv2,
+    leaguegamefinder,
     leaguegamelog,
     leagueleaders,
     leaguestandingsv3,
@@ -93,6 +94,14 @@ def list_games(date: str = Query(..., description="YYYY-MM-DD")):
     except ValueError as err:
         raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD") from err
 
+    today_et = datetime.now(EASTERN).date()
+    is_past_date = parsed.date() < today_et
+
+    # ScoreboardV2's LineScore isn't reliably populated for past dates, so use LeagueGameFinder
+    # for completed games. ScoreboardV2 is still the right source for today/future (live + scheduled).
+    if is_past_date:
+        return {"data": _list_past_games(parsed)}
+
     sb = _call_nba(
         lambda: scoreboardv2.ScoreboardV2(game_date=parsed.strftime("%m/%d/%Y"), timeout=30)
     )
@@ -114,10 +123,69 @@ def list_games(date: str = Query(..., description="YYYY-MM-DD")):
         if not home_team or not visitor_team:
             continue
 
-        games.append(_build_game(game_id, parsed, header, home_team, visitor_team, home_line, visitor_line))
+        games.append(
+            _build_game(game_id, parsed, header, home_team, visitor_team, home_line, visitor_line, False)
+        )
 
     games.sort(key=lambda g: g.get("datetime") or g.get("date") or "")
     return {"data": games}
+
+
+def _list_past_games(parsed_date: datetime) -> list[dict[str, Any]]:
+    """Build the games list for a date strictly in the past, using LeagueGameFinder."""
+    finder = _call_nba(
+        lambda: leaguegamefinder.LeagueGameFinder(
+            date_from_nullable=parsed_date.strftime("%m/%d/%Y"),
+            date_to_nullable=parsed_date.strftime("%m/%d/%Y"),
+            league_id_nullable="00",
+            timeout=30,
+        )
+    )
+    rows = _rows_to_dicts(finder.league_game_finder_results.get_dict())
+
+    games_by_id: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        game_id = row.get("GAME_ID")
+        if not game_id:
+            continue
+        team_meta = _TEAM_LOOKUP.get(row.get("TEAM_ID"))
+        if not team_meta:
+            continue
+
+        is_home = "vs." in (row.get("MATCHUP") or "")
+        team_score = _safe_int(row.get("PTS"))
+        season_id = str(row.get("SEASON_ID") or "")
+        season_year = int(season_id[1:]) if len(season_id) >= 5 and season_id[1:].isdigit() else 0
+
+        existing = games_by_id.setdefault(
+            game_id,
+            {
+                "id": game_id,
+                "date": parsed_date.strftime("%Y-%m-%d"),
+                "status": "Final",
+                "period": 4,
+                "time": None,
+                "datetime": parsed_date.strftime("%Y-%m-%dT00:00:00"),
+                "tip_off": None,
+                "season": season_year,
+                "postseason": game_id.startswith("004"),
+                "home_team": None,
+                "visitor_team": None,
+                "home_team_score": 0,
+                "visitor_team_score": 0,
+            },
+        )
+
+        if is_home:
+            existing["home_team"] = team_meta
+            existing["home_team_score"] = team_score
+        else:
+            existing["visitor_team"] = team_meta
+            existing["visitor_team_score"] = team_score
+
+    games = [g for g in games_by_id.values() if g["home_team"] and g["visitor_team"]]
+    games.sort(key=lambda g: g.get("date") or "")
+    return games
 
 
 @app.get("/leaders")
@@ -330,12 +398,21 @@ def _build_game(
     visitor_team: dict[str, Any],
     home_line: dict[str, Any] | None,
     visitor_line: dict[str, Any] | None,
+    is_past_date: bool = False,
 ) -> dict[str, Any]:
     live_period = header.get("LIVE_PERIOD") or 0
     live_time_raw = header.get("LIVE_PC_TIME")
     live_time = live_time_raw.strip() if isinstance(live_time_raw, str) and live_time_raw.strip() else None
     status_text = (header.get("GAME_STATUS_TEXT") or "").strip()
     tip_off = _parse_tipoff(parsed_date, status_text)
+
+    # ScoreboardV2 often leaves status_text as the original tip-off time even after a game ends,
+    # and GAME_STATUS_ID isn't always refreshed for past dates either. Treat any game whose ET
+    # date is in the past as Final, since ScoreboardV2 only returns games that were actually played.
+    status_id_raw = header.get("GAME_STATUS_ID")
+    status_id = int(status_id_raw) if status_id_raw is not None else 0
+    if (status_id == 3 or is_past_date) and "final" not in status_text.lower():
+        status_text = "Final"
 
     return {
         "id": game_id,

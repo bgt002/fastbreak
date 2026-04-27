@@ -17,7 +17,9 @@ export const colors = {
   border: "rgba(255, 255, 255, 0.08)",
   borderStrong: "rgba(255, 255, 255, 0.14)",
   white: "#FFFFFF",
-  black: "#000000"
+  black: "#000000",
+  win: "#00FFC2",
+  loss: "#FF5263"
 };
 
 export const fonts = {
