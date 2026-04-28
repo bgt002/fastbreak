@@ -207,7 +207,7 @@ Then `fly deploy` again to apply. One always-on `shared-cpu-1x@256MB` VM fits co
 
 The first build takes ~2 min. Cloudflare gives you a permanent URL like `https://fastbreak.pages.dev`. Every push to `master` redeploys automatically.
 
-The [public/_redirects](public/_redirects) file in the repo tells Pages to serve `index.html` for unknown routes (so deep links and refreshes don't 404).
+[wrangler.jsonc](wrangler.jsonc) at the repo root controls how the static bundle is served. The key setting is `assets.not_found_handling: "single-page-application"` — this is the new Workers + Static Assets system's SPA fallback, which serves `index.html` for any unknown route so client-side routing works on hard reloads and deep links.
 
 ### After deploying
 

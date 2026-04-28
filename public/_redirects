@@ -1,4 +1,0 @@
-# Single-page app fallback: any unknown path returns index.html with a 200 so
-# the React Native Web router can pick it up client-side. Without this, deep
-# links and refreshes 404 on Cloudflare Pages.
-/*    /index.html    200

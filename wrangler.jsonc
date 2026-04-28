@@ -1,0 +1,22 @@
+{
+  // Cloudflare Pages now deploys via the Workers + Static Assets model. This
+  // file controls how the static bundle in `dist/` is served.
+  //
+  // `not_found_handling: "single-page-application"` is the canonical SPA
+  // fallback for this system — any URL that doesn't match a real file in
+  // `dist/` returns `index.html` so client-side routing works on hard reloads
+  // and deep links. This replaces the old `_redirects` file (which the new
+  // wrangler validator rejects with an "infinite loop" error on the `/*`
+  // wildcard rule).
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "fastbreak",
+  "compatibility_date": "2026-04-28",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true
+  },
+  "assets": {
+    "directory": "dist",
+    "not_found_handling": "single-page-application"
+  }
+}
