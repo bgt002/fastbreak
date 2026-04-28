@@ -9,10 +9,12 @@
     "backgroundColor": "#050B14",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": false
+      "supportsTablet": false,
+      "bundleIdentifier": "com.inrab.fastbreak"
     },
     "android": {
-      "edgeToEdgeEnabled": true
+      "edgeToEdgeEnabled": true,
+      "package": "com.inrab.fastbreak"
     },
     "web": {
       "bundler": "metro",
