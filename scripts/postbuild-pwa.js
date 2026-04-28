@@ -32,22 +32,37 @@ const tags = `
       html, body, #root { background-color: #050B14; margin: 0; padding: 0; }
       html { overscroll-behavior: none; }
       html, body { height: 100%; width: 100%; }
-      /* Anchor the React root to the viewport's four corners with
-         position:fixed + inset:0. Why: iOS PWA standalone reports vh/dvh/lvh
-         values that *exclude the home-indicator strip* even with
-         viewport-fit=cover, which leaves a band of body background below the
-         flex-bottom-aligned nav. inset:0 sidesteps the unit ambiguity by
-         pinning to the actual viewport edges. The AppChrome's screen View
-         (flex:1) fills #root and lays out [TopBar | content (flex:1) |
-         BottomNav] as a flex column — so the nav sits flush with the real
-         viewport bottom. */
+      /* Why a JS-driven --app-vh instead of a CSS unit: in iOS PWA standalone
+         mode, every CSS viewport unit (vh, dvh, lvh, svh) AND position:fixed
+         + inset:0 anchor to the *safe* viewport — they all exclude the
+         home-indicator strip even with viewport-fit=cover. That leaves a
+         ~34px band of body background visible below the bottom nav. The only
+         reliable measurement that returns the *full* visual viewport height
+         (status-bar through home-indicator inclusive) is window.innerHeight
+         read from JS. The script below writes it into --app-vh and refreshes
+         on resize/visualViewport changes. */
       #root {
-        position: fixed;
-        inset: 0;
         display: flex;
         flex-direction: column;
+        height: var(--app-vh, 100vh);
       }
     </style>
+    <script>
+      (function () {
+        function setHeight() {
+          document.documentElement.style.setProperty(
+            "--app-vh",
+            window.innerHeight + "px"
+          );
+        }
+        setHeight();
+        window.addEventListener("resize", setHeight);
+        window.addEventListener("orientationchange", setHeight);
+        if (window.visualViewport) {
+          window.visualViewport.addEventListener("resize", setHeight);
+        }
+      })();
+    </script>
 `;
 
 let html = fs.readFileSync(indexPath, "utf-8");
