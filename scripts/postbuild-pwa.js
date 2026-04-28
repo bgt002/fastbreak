@@ -31,18 +31,21 @@ const tags = `
          mounts. The actual app uses #050B14 too. */
       html, body, #root { background-color: #050B14; margin: 0; padding: 0; }
       html { overscroll-behavior: none; }
-      /* Make the React root a flex column sized to exactly 100dvh. The
-         AppChrome's screen View uses flex: 1 inside, so it fills 100dvh and
-         lays out [TopBar | content (flex:1) | BottomNav] from top to bottom.
-         With the nav as a normal flex child (see AppChrome's webBottomNavSafeArea
-         which cancels its position:absolute), it sits at the bottom of this
-         stable column by layout — not by viewport-relative anchoring, which
-         iOS PWA animates inconsistently across launches. */
-      html, body { height: 100%; }
+      html, body { height: 100%; width: 100%; }
+      /* Anchor the React root to the viewport's four corners with
+         position:fixed + inset:0. Why: iOS PWA standalone reports vh/dvh/lvh
+         values that *exclude the home-indicator strip* even with
+         viewport-fit=cover, which leaves a band of body background below the
+         flex-bottom-aligned nav. inset:0 sidesteps the unit ambiguity by
+         pinning to the actual viewport edges. The AppChrome's screen View
+         (flex:1) fills #root and lays out [TopBar | content (flex:1) |
+         BottomNav] as a flex column — so the nav sits flush with the real
+         viewport bottom. */
       #root {
+        position: fixed;
+        inset: 0;
         display: flex;
         flex-direction: column;
-        height: 100dvh;
       }
     </style>
 `;
