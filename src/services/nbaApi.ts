@@ -28,6 +28,7 @@ export type NbaBoxScorePlayer = {
   player_id: number;
   name: string;
   starter: boolean;
+  on_court: boolean;
   minutes: string | null;
   points: number;
   rebounds: number;
@@ -47,10 +48,16 @@ export type NbaBoxScorePlayer = {
   fta: number;
 };
 
+export type NbaBoxScorePeriod = {
+  period: number;
+  score: number;
+};
+
 export type NbaBoxScoreTeam = {
   team: NbaTeam;
   score: number;
   players: NbaBoxScorePlayer[];
+  periods: NbaBoxScorePeriod[];
 };
 
 export type NbaBoxScore = {
@@ -74,6 +81,24 @@ export type NbaLeader = {
   rank: number;
   season: number;
   games_played: number;
+};
+
+export type NbaPlayerSeasonStats = {
+  player: NbaPlayer;
+  games_played: number;
+  minutes: number;
+  stats: {
+    pts: number;
+    reb: number;
+    ast: number;
+    stl: number;
+    blk: number;
+    tov: number;
+    fg_pct: number;
+    fg3_pct: number;
+    ft_pct: number;
+  };
+  season: number;
 };
 
 export type NbaStanding = {
@@ -126,8 +151,12 @@ export function formatIsoDate(date: Date) {
   return `${year}-${month}-${day}`;
 }
 
-export function buildDateOptions(anchor = new Date()) {
-  return [-2, -1, 0, 1, 2, 3].map((offset) => {
+export function buildDateOptions(
+  options: { daysBack?: number; daysForward?: number; anchor?: Date } = {}
+) {
+  const { daysBack = 30, daysForward = 30, anchor = new Date() } = options;
+  const offsets = Array.from({ length: daysBack + daysForward + 1 }, (_, i) => i - daysBack);
+  return offsets.map((offset) => {
     const date = new Date(anchor);
     date.setDate(anchor.getDate() + offset);
     const isToday = offset === 0;
@@ -142,6 +171,10 @@ export function buildDateOptions(anchor = new Date()) {
       day: String(date.getDate())
     };
   });
+}
+
+export function playerHeadshotUri(playerId: number | string) {
+  return `https://cdn.nba.com/headshots/nba/latest/260x190/${playerId}.png`;
 }
 
 export function teamLogoUri(team: Pick<NbaTeam, "abbreviation">) {
@@ -221,7 +254,16 @@ export function getGameClockLabel(game: NbaGame) {
     return formatTipOff(game) ?? game.status ?? "Scheduled";
   }
 
-  return [game.status, game.time?.trim()].filter(Boolean).join(" - ");
+  const status = game.status?.trim() ?? "";
+  const time = game.time?.trim() ?? "";
+  if (!time) return status;
+  // Live status like "Q3 5:32", "Q3 :03.3", or "Q4 39.8" already contains the
+  // clock. Skip appending `time` if the status either has a clock pattern,
+  // already includes the time string, or starts with a period prefix.
+  if (/:\d{2}/.test(status)) return status;
+  if (status.includes(time)) return status;
+  if (/^(Q\d|OT\d)/i.test(status)) return status;
+  return `${status} - ${time}`;
 }
 
 export function formatTipOff(game: NbaGame): string | null {
@@ -288,6 +330,14 @@ export async function getLeaders(
 
 export async function getStandings(season: number) {
   const response = await request<NbaListResponse<NbaStanding>>("/standings", { season });
+  return response.data;
+}
+
+export async function getPlayerSeasonStats(season: number, seasonType: "regular" | "playoffs" = "regular") {
+  const response = await request<NbaListResponse<NbaPlayerSeasonStats>>("/players", {
+    season,
+    season_type: seasonType === "playoffs" ? "Playoffs" : "Regular Season"
+  });
   return response.data;
 }
 

@@ -1,10 +1,11 @@
 import Ionicons from "@expo/vector-icons/Ionicons";
-import { useEffect } from "react";
-import { Image, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Animated, Easing, Image, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { useAsyncData } from "../hooks/useAsyncData";
 import {
   getBoxScore,
+  getGameClockLabel,
   getGameState,
   teamLogoUri,
   type NbaBoxScorePlayer,
@@ -109,12 +110,12 @@ const tableWidth = 180 + statColumns.reduce((total, column) => total + column.wi
 export function BoxScoreModal({ game, onClose }: Props) {
   return (
     <Modal animationType="slide" onRequestClose={onClose} presentationStyle="pageSheet" visible={game !== null}>
-      {game ? <BoxScoreContent game={game} onClose={onClose} /> : null}
+      {game ? <BoxScoreContent key={game.id} game={game} /> : null}
     </Modal>
   );
 }
 
-function BoxScoreContent({ game, onClose }: { game: NbaGame; onClose: () => void }) {
+function BoxScoreContent({ game }: { game: NbaGame }) {
   const state = getGameState(game);
   const isUpcoming = state === "upcoming";
   const isLive = state === "live";
@@ -131,16 +132,77 @@ function BoxScoreContent({ game, onClose }: { game: NbaGame; onClose: () => void
     return () => clearInterval(interval);
   }, [isLive, silentReload]);
 
+  const [refreshing, setRefreshing] = useState(false);
+  const spin = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    if (!refreshing) {
+      spin.stopAnimation();
+      return;
+    }
+    spin.setValue(0);
+    const loop = Animated.loop(
+      Animated.timing(spin, {
+        toValue: 1,
+        duration: 700,
+        easing: Easing.linear,
+        useNativeDriver: true
+      })
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [refreshing, spin]);
+  const handleRefresh = useCallback(async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      await silentReload();
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refreshing, silentReload]);
+  const spinDeg = spin.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "360deg"] });
+
+  const orderedTeams = useMemo(() => orderTeams(data?.teams ?? [], game), [data, game]);
+  const [selectedTeamId, setSelectedTeamId] = useState<number | null>(null);
+  const activeTeamId = selectedTeamId ?? orderedTeams[0]?.team.id ?? null;
+  const activeTeam = orderedTeams.find((t) => t.team.id === activeTeamId) ?? orderedTeams[0];
+
+  // Mirror the body's horizontal scroll onto the sticky stat header so the
+  // pinned column labels stay aligned with the columns scrolled below them.
+  const horizontalScrollX = useRef(new Animated.Value(0)).current;
+  const stickyHeaderScrollRef = useRef<ScrollView>(null);
+  useEffect(() => {
+    const id = horizontalScrollX.addListener(({ value }) => {
+      stickyHeaderScrollRef.current?.scrollTo({ x: value, animated: false });
+    });
+    return () => horizontalScrollX.removeListener(id);
+  }, [horizontalScrollX]);
+  // Reset to 0 when switching teams so the sticky header doesn't keep an
+  // off-screen scroll position from the previous team's table.
+  useEffect(() => {
+    horizontalScrollX.setValue(0);
+    stickyHeaderScrollRef.current?.scrollTo({ x: 0, animated: false });
+  }, [activeTeamId, horizontalScrollX]);
+
   return (
     <View style={styles.container}>
       <View style={styles.header}>
+        <Text style={[styles.headerStatus, isLive && styles.headerStatusLive]}>{getGameClockLabel(game)}</Text>
         <View style={styles.headerTeams}>
           <HeaderTeam abbreviation={game.visitor_team.abbreviation} score={game.visitor_team_score} />
           <Text style={styles.headerSeparator}>@</Text>
           <HeaderTeam abbreviation={game.home_team.abbreviation} score={game.home_team_score} />
         </View>
-        <Pressable accessibilityLabel="Close box score" hitSlop={12} onPress={onClose} style={({ pressed }) => [styles.closeButton, pressed && styles.pressed]}>
-          <Ionicons color={colors.white} name="close" size={22} />
+        <Pressable
+          accessibilityLabel="Refresh box score"
+          disabled={refreshing}
+          hitSlop={12}
+          onPress={handleRefresh}
+          style={({ pressed }) => [styles.refreshButton, pressed && styles.refreshButtonPressed]}
+        >
+          <Animated.View style={{ transform: [{ rotate: spinDeg }] }}>
+            <Ionicons color={colors.white} name="refresh-outline" size={20} />
+          </Animated.View>
         </Pressable>
       </View>
 
@@ -152,14 +214,102 @@ function BoxScoreContent({ game, onClose }: { game: NbaGame; onClose: () => void
           {error ? <ErrorState error={error} onRetry={reload} /> : null}
 
           {data ? (
-            <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-              {data.teams.map((team) => (
-                <TeamSection key={team.team.id} team={team} />
-              ))}
+            <ScrollView
+              contentContainerStyle={styles.scrollContent}
+              showsVerticalScrollIndicator={false}
+              stickyHeaderIndices={activeTeam ? [1] : []}
+            >
+              <LineScoreTable teams={orderedTeams} game={game} />
+              <View style={styles.stickyBlock}>
+                <TeamToggle
+                  teams={orderedTeams}
+                  selectedTeamId={activeTeam?.team.id ?? null}
+                  onSelect={setSelectedTeamId}
+                />
+                {activeTeam ? <TableStickyHeader scrollRef={stickyHeaderScrollRef} /> : null}
+              </View>
+              {activeTeam ? <TableBody team={activeTeam} scrollX={horizontalScrollX} /> : null}
             </ScrollView>
           ) : null}
         </>
       )}
+    </View>
+  );
+}
+
+function orderTeams(teams: NbaBoxScoreTeam[], game: NbaGame): NbaBoxScoreTeam[] {
+  const visitor = teams.find((t) => t.team.id === game.visitor_team.id);
+  const home = teams.find((t) => t.team.id === game.home_team.id);
+  return [visitor, home].filter((t): t is NbaBoxScoreTeam => Boolean(t));
+}
+
+function LineScoreTable({ teams, game }: { teams: NbaBoxScoreTeam[]; game: NbaGame }) {
+  if (teams.length === 0) return null;
+  const isFinal = getGameState(game) === "final";
+  const currentPeriod = game.period ?? 0;
+  const maxPeriod = Math.max(4, currentPeriod, ...teams.flatMap((t) => t.periods.map((p) => p.period)));
+  const periods = Array.from({ length: maxPeriod }, (_, i) => i + 1);
+
+  return (
+    <View style={styles.lineScore}>
+      <View style={styles.lineScoreRow}>
+        <View style={styles.lineScoreLogoCell} />
+        {periods.map((p) => (
+          <Text key={p} style={styles.lineScoreHeader}>
+            {p <= 4 ? `Q${p}` : `OT${p - 4}`}
+          </Text>
+        ))}
+        <Text style={[styles.lineScoreHeader, styles.lineScoreTotalHeader]}>T</Text>
+      </View>
+      {teams.map((team) => (
+        <View key={team.team.id} style={[styles.lineScoreRow, styles.lineScoreTeamRow]}>
+          <View style={styles.lineScoreLogoCell}>
+            <Image source={{ uri: teamLogoUri(team.team) }} style={styles.lineScoreLogo} />
+          </View>
+          {periods.map((p) => {
+            const period = team.periods.find((per) => per.period === p);
+            const played = isFinal || p <= currentPeriod;
+            return (
+              <Text key={p} style={styles.lineScoreCell}>
+                {played && period ? period.score : "—"}
+              </Text>
+            );
+          })}
+          <Text style={[styles.lineScoreCell, styles.lineScoreTotal]}>{team.score}</Text>
+        </View>
+      ))}
+    </View>
+  );
+}
+
+function TeamToggle({
+  teams,
+  selectedTeamId,
+  onSelect
+}: {
+  teams: NbaBoxScoreTeam[];
+  selectedTeamId: number | null;
+  onSelect: (id: number) => void;
+}) {
+  return (
+    <View style={styles.toggle}>
+      {teams.map((team) => {
+        const active = team.team.id === selectedTeamId;
+        return (
+          <Pressable
+            key={team.team.id}
+            onPress={() => onSelect(team.team.id)}
+            style={({ pressed }) => [
+              styles.togglePill,
+              active && styles.togglePillActive,
+              pressed && styles.togglePillPressed
+            ]}
+          >
+            <Image source={{ uri: teamLogoUri(team.team) }} style={styles.toggleLogo} />
+            <Text style={[styles.toggleText, active && styles.toggleTextActive]}>{team.team.abbreviation}</Text>
+          </Pressable>
+        );
+      })}
     </View>
   );
 }
@@ -174,30 +324,46 @@ function HeaderTeam({ abbreviation, score }: { abbreviation: string; score: numb
   );
 }
 
-function TeamSection({ team }: { team: NbaBoxScoreTeam }) {
+function TableStickyHeader({ scrollRef }: { scrollRef: React.RefObject<ScrollView | null> }) {
+  return (
+    <ScrollView
+      horizontal
+      ref={scrollRef}
+      scrollEnabled={false}
+      showsHorizontalScrollIndicator={false}
+      style={styles.stickyHeaderRow}
+    >
+      <View style={[styles.table, styles.tableHeaderRow, { width: tableWidth }]}>
+        <View style={[styles.tableRow, styles.tableHeader]}>
+          <Text style={[styles.headerCell, styles.playerCell]}>Player</Text>
+          {statColumns.map((column) => (
+            <Text key={column.label} style={[styles.headerCell, { width: column.width }]}>
+              {column.label}
+            </Text>
+          ))}
+        </View>
+      </View>
+    </ScrollView>
+  );
+}
+
+function TableBody({ team, scrollX }: { team: NbaBoxScoreTeam; scrollX: Animated.Value }) {
   const starters = team.players.filter((player) => player.starter);
   const bench = team.players.filter((player) => !player.starter);
   const totals = computeTotals(team.players);
 
   return (
     <View style={styles.teamSection}>
-      <View style={styles.teamSectionHeader}>
-        <Image source={{ uri: teamLogoUri(team.team) }} style={styles.teamSectionLogo} />
-        <Text style={styles.teamSectionTitle}>{team.team.full_name}</Text>
-        <Text style={styles.teamSectionScore}>{team.score}</Text>
-      </View>
-
-      <ScrollView horizontal showsHorizontalScrollIndicator>
+      <Animated.ScrollView
+        horizontal
+        onScroll={Animated.event(
+          [{ nativeEvent: { contentOffset: { x: scrollX } } }],
+          { useNativeDriver: false }
+        )}
+        scrollEventThrottle={16}
+        showsHorizontalScrollIndicator
+      >
         <View style={[styles.table, { width: tableWidth }]}>
-          <View style={[styles.tableRow, styles.tableHeader]}>
-            <Text style={[styles.headerCell, styles.playerCell]}>Player</Text>
-            {statColumns.map((column) => (
-              <Text key={column.label} style={[styles.headerCell, { width: column.width }]}>
-                {column.label}
-              </Text>
-            ))}
-          </View>
-
           {starters.length > 0 ? <SectionLabel label="Starters" /> : null}
           {starters.map((player) => (
             <PlayerRow key={player.player_id} player={player} />
@@ -210,7 +376,7 @@ function TeamSection({ team }: { team: NbaBoxScoreTeam }) {
 
           <TotalsRow totals={totals} />
         </View>
-      </ScrollView>
+      </Animated.ScrollView>
     </View>
   );
 }
@@ -223,10 +389,11 @@ function SectionLabel({ label }: { label: string }) {
   );
 }
 
-function PlayerRow({ player }: { player: NbaBoxScorePlayer }) {
+const PlayerRow = memo(function PlayerRow({ player }: { player: NbaBoxScorePlayer }) {
   return (
     <View style={[styles.tableRow, styles.bodyRow]}>
-      <View style={styles.playerCell}>
+      <View style={[styles.playerCell, styles.playerCellInner]}>
+        {player.on_court ? <View style={styles.onCourtDot} /> : <View style={styles.onCourtSpacer} />}
         <Text numberOfLines={1} style={styles.playerName}>
           {player.name}
         </Text>
@@ -238,7 +405,7 @@ function PlayerRow({ player }: { player: NbaBoxScorePlayer }) {
       ))}
     </View>
   );
-}
+});
 
 function TotalsRow({ totals }: { totals: TeamTotals }) {
   return (
@@ -265,14 +432,36 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(14, 30, 54, 0.86)",
     borderBottomColor: "rgba(255,255,255,0.06)",
     borderBottomWidth: 1,
-    flexDirection: "row",
-    justifyContent: "space-between",
     paddingHorizontal: spacing.gutter,
     paddingVertical: spacing.md
   },
+  headerStatus: {
+    color: "#A5ACB8",
+    fontFamily: fonts.bodyBold,
+    fontSize: 11,
+    letterSpacing: 0.9,
+    marginBottom: spacing.xs,
+    textTransform: "uppercase"
+  },
+  headerStatusLive: {
+    color: colors.tertiary
+  },
+  refreshButton: {
+    alignItems: "center",
+    backgroundColor: "rgba(255,255,255,0.08)",
+    borderRadius: 18,
+    height: 36,
+    justifyContent: "center",
+    position: "absolute",
+    right: spacing.gutter,
+    top: spacing.md,
+    width: 36
+  },
+  refreshButtonPressed: {
+    opacity: 0.6
+  },
   headerTeams: {
     alignItems: "center",
-    flex: 1,
     flexDirection: "row",
     gap: spacing.lg,
     justifyContent: "center"
@@ -305,14 +494,6 @@ const styles = StyleSheet.create({
     lineHeight: 26,
     marginTop: 2
   },
-  closeButton: {
-    alignItems: "center",
-    backgroundColor: "rgba(255,255,255,0.08)",
-    borderRadius: 18,
-    height: 36,
-    justifyContent: "center",
-    width: 36
-  },
   scrollContent: {
     paddingBottom: spacing.xl,
     paddingTop: spacing.md
@@ -320,28 +501,102 @@ const styles = StyleSheet.create({
   teamSection: {
     marginBottom: spacing.lg
   },
-  teamSectionHeader: {
+  stickyBlock: {
+    backgroundColor: colors.background
+  },
+  stickyHeaderRow: {
+    backgroundColor: colors.background
+  },
+  tableHeaderRow: {
+    backgroundColor: colors.background
+  },
+  lineScore: {
+    borderBottomColor: "rgba(255,255,255,0.06)",
+    borderBottomWidth: 1,
+    paddingHorizontal: spacing.gutter,
+    paddingVertical: spacing.md
+  },
+  lineScoreRow: {
     alignItems: "center",
+    flexDirection: "row",
+    minHeight: 30
+  },
+  lineScoreTeamRow: {
+    borderTopColor: "rgba(255,255,255,0.04)",
+    borderTopWidth: 1,
+    minHeight: 38
+  },
+  lineScoreLogoCell: {
+    alignItems: "center",
+    justifyContent: "center",
+    width: 38
+  },
+  lineScoreLogo: {
+    height: 22,
+    resizeMode: "contain",
+    width: 22
+  },
+  lineScoreHeader: {
+    color: "#7D8490",
+    flex: 1,
+    fontFamily: fonts.bodyBold,
+    fontSize: 11,
+    letterSpacing: 0.6,
+    textAlign: "center",
+    textTransform: "uppercase"
+  },
+  lineScoreTotalHeader: {
+    color: "#A5ACB8"
+  },
+  lineScoreCell: {
+    color: colors.white,
+    flex: 1,
+    fontFamily: fonts.bodyMedium,
+    fontSize: 15,
+    textAlign: "center"
+  },
+  lineScoreTotal: {
+    color: colors.white,
+    fontFamily: fonts.bodyBold,
+    fontSize: 17
+  },
+  toggle: {
     flexDirection: "row",
     gap: spacing.sm,
     paddingHorizontal: spacing.gutter,
+    paddingVertical: spacing.md
+  },
+  togglePill: {
+    alignItems: "center",
+    backgroundColor: colors.surfaceContainer,
+    borderColor: "rgba(255,255,255,0.06)",
+    borderRadius: 8,
+    borderWidth: 1,
+    flex: 1,
+    flexDirection: "row",
+    gap: spacing.sm,
+    justifyContent: "center",
     paddingVertical: spacing.sm
   },
-  teamSectionLogo: {
-    height: 24,
+  togglePillActive: {
+    backgroundColor: colors.secondary,
+    borderColor: colors.secondary
+  },
+  togglePillPressed: {
+    opacity: 0.72
+  },
+  toggleLogo: {
+    height: 22,
     resizeMode: "contain",
-    width: 24
+    width: 22
   },
-  teamSectionTitle: {
-    color: colors.white,
-    flex: 1,
+  toggleText: {
+    color: colors.onBackground,
     fontFamily: fonts.heading,
-    fontSize: 14
+    fontSize: 13
   },
-  teamSectionScore: {
-    color: colors.secondary,
-    fontFamily: fonts.scoreboard,
-    fontSize: 18
+  toggleTextActive: {
+    color: colors.white
   },
   table: {
     paddingHorizontal: spacing.gutter
@@ -368,6 +623,21 @@ const styles = StyleSheet.create({
   playerCell: {
     paddingHorizontal: 4,
     width: 180
+  },
+  playerCellInner: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 6
+  },
+  onCourtDot: {
+    backgroundColor: colors.tertiary,
+    borderRadius: 4,
+    height: 8,
+    width: 8
+  },
+  onCourtSpacer: {
+    height: 8,
+    width: 8
   },
   totalsRow: {
     backgroundColor: "rgba(14, 30, 54, 0.62)",
@@ -418,8 +688,5 @@ const styles = StyleSheet.create({
     fontSize: 9,
     letterSpacing: 0.9,
     textTransform: "uppercase"
-  },
-  pressed: {
-    opacity: 0.72
   }
 });

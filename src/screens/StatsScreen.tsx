@@ -1,8 +1,9 @@
-import Ionicons from "@expo/vector-icons/Ionicons";
-import type { ComponentProps } from "react";
+import { useMemo, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { EmptyState, ErrorState, LoadingState } from "../components/DataState";
+import { PlayerAvatar } from "../components/PlayerAvatar";
+import { PlayerLeadersModal } from "../components/PlayerLeadersModal";
 import { useAsyncData } from "../hooks/useAsyncData";
 import {
   formatLeaderValue,
@@ -10,7 +11,6 @@ import {
   getCurrentNbaSeason,
   getLeaders,
   getTeams,
-  playerInitials,
   playerName,
   type NbaLeader,
   type NbaTeam,
@@ -18,12 +18,9 @@ import {
 } from "../services/nbaApi";
 import { colors, fonts, radii, spacing } from "../theme";
 
-type IoniconName = ComponentProps<typeof Ionicons>["name"];
-
 type StatCategory = {
   id: StatType;
   title: string;
-  icon: IoniconName;
   leaders: NbaLeader[];
 };
 
@@ -35,19 +32,21 @@ type StatsData = {
 
 const season = getCurrentNbaSeason();
 const primaryStats: Array<Omit<StatCategory, "leaders">> = [
-  { id: "pts", title: "Points per Game", icon: "trending-up-outline" },
-  { id: "reb", title: "Rebounds per Game", icon: "radio-button-on-outline" },
-  { id: "ast", title: "Assists per Game", icon: "share-social-outline" }
+  { id: "pts", title: "Points per Game" },
+  { id: "reb", title: "Rebounds per Game" },
+  { id: "ast", title: "Assists per Game" }
 ];
 
 const compactStats: Array<Omit<StatCategory, "leaders">> = [
-  { id: "stl", title: "Steals Leader", icon: "hand-left-outline" },
-  { id: "blk", title: "Blocks Leader", icon: "remove-circle-outline" },
-  { id: "fg_pct", title: "FG% Leader", icon: "stats-chart-outline" }
+  { id: "stl", title: "Steals Leader" },
+  { id: "blk", title: "Blocks Leader" },
+  { id: "fg_pct", title: "FG% Leader" }
 ];
 
 export function StatsScreen() {
   const { data, error, loading, reload } = useAsyncData(loadStatsData, []);
+  const [openStat, setOpenStat] = useState<StatType | null>(null);
+  const teamsArray = useMemo(() => Array.from(data?.teamMap.values() ?? []), [data]);
 
   return (
     <ScrollView bounces={false} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
@@ -67,7 +66,12 @@ export function StatsScreen() {
           <>
             <View style={styles.statsStack}>
               {data.categories.map((category) => (
-                <StatCategoryCard category={category} key={category.id} teamMap={data.teamMap} />
+                <StatCategoryCard
+                  category={category}
+                  key={category.id}
+                  teamMap={data.teamMap}
+                  onPress={() => setOpenStat(category.id)}
+                />
               ))}
             </View>
 
@@ -76,13 +80,18 @@ export function StatsScreen() {
                 const leader = category.leaders[0];
 
                 return (
-                  <View style={styles.compactCard} key={category.id}>
+                  <Pressable
+                    accessibilityRole="button"
+                    key={category.id}
+                    onPress={() => setOpenStat(category.id)}
+                    style={({ pressed }) => [styles.compactCard, pressed && styles.pressed]}
+                  >
                     <View style={styles.compactHeader}>
                       <Text style={styles.compactLabel}>{category.title}</Text>
-                      <Ionicons color="#7D8490" name={category.icon} size={15} />
                     </View>
                     {leader ? (
                       <View style={styles.compactRow}>
+                        <PlayerAvatar player={leader.player} size={28} />
                         <Text numberOfLines={1} style={styles.compactPlayer}>
                           {playerName(leader.player)}
                         </Text>
@@ -93,27 +102,39 @@ export function StatsScreen() {
                     ) : (
                       <Text style={styles.compactEmpty}>Unavailable</Text>
                     )}
-                  </View>
+                  </Pressable>
                 );
               })}
             </View>
           </>
         ) : null}
       </View>
+      <PlayerLeadersModal
+        visible={openStat !== null}
+        initialStat={openStat}
+        season={season}
+        teams={teamsArray}
+        onClose={() => setOpenStat(null)}
+      />
     </ScrollView>
   );
 }
 
 async function loadStatsData(): Promise<StatsData> {
-  const [teams, ...leaders] = await Promise.all([
-    getTeams(),
-    ...primaryStats.map((stat) => getLeaders(stat.id, season)),
-    ...compactStats.map((stat) => getLeaders(stat.id, season))
-  ]);
-
+  // stats.nba.com rate-limits aggressive parallel requests, so fetch the six
+  // leaders categories sequentially. The backend caches them for 5 min, so
+  // subsequent loads are fast even though the cold path is serial.
+  const teams = await getTeams();
   const teamMap = new Map(teams.map((team) => [team.id, team]));
-  const primaryLeaderSets = leaders.slice(0, primaryStats.length);
-  const compactLeaderSets = leaders.slice(primaryStats.length);
+
+  const allStats = [...primaryStats, ...compactStats];
+  const leaderSets: NbaLeader[][] = [];
+  for (const stat of allStats) {
+    leaderSets.push(await getLeaders(stat.id, season));
+  }
+
+  const primaryLeaderSets = leaderSets.slice(0, primaryStats.length);
+  const compactLeaderSets = leaderSets.slice(primaryStats.length);
 
   return {
     categories: primaryStats.map((stat, index) => ({
@@ -128,12 +149,23 @@ async function loadStatsData(): Promise<StatsData> {
   };
 }
 
-function StatCategoryCard({ category, teamMap }: { category: StatCategory; teamMap: Map<number, NbaTeam> }) {
+function StatCategoryCard({
+  category,
+  teamMap,
+  onPress
+}: {
+  category: StatCategory;
+  teamMap: Map<number, NbaTeam>;
+  onPress: () => void;
+}) {
   return (
-    <View style={styles.card}>
+    <Pressable
+      accessibilityRole="button"
+      onPress={onPress}
+      style={({ pressed }) => [styles.card, pressed && styles.pressed]}
+    >
       <View style={styles.cardHeader}>
         <Text style={styles.cardTitle}>{category.title}</Text>
-        <Ionicons color={category.id === "pts" ? colors.secondary : "#7D8490"} name={category.icon} size={18} />
       </View>
       <View>
         {category.leaders.map((leader, index) => (
@@ -146,7 +178,7 @@ function StatCategoryCard({ category, teamMap }: { category: StatCategory; teamM
           />
         ))}
       </View>
-    </View>
+    </Pressable>
   );
 }
 
@@ -161,18 +193,15 @@ function LeaderRow({
   statType: StatType;
   teamMap: Map<number, NbaTeam>;
 }) {
-  const featured = leader.rank === 1 && statType === "pts";
   const team = leader.player.team ?? (leader.player.team_id ? teamMap.get(leader.player.team_id) : undefined);
 
   return (
-    <Pressable accessibilityRole="button" style={({ pressed }) => [styles.leaderRow, featured && styles.leaderRowFeatured, !isLast && styles.leaderDivider, pressed && styles.pressed]}>
+    <View style={[styles.leaderRow, !isLast && styles.leaderDivider]}>
       <View style={styles.leaderIdentity}>
-        <Text style={[styles.rank, featured && styles.rankFeatured]}>{leader.rank}</Text>
-        <View style={[styles.initialsAvatar, featured && styles.initialsAvatarFeatured]}>
-          <Text style={styles.initialsText}>{playerInitials(leader.player)}</Text>
-        </View>
+        <Text style={styles.rank}>{leader.rank}</Text>
+        <PlayerAvatar player={leader.player} size={38} />
         <View style={styles.leaderCopy}>
-          <Text numberOfLines={1} style={[styles.leaderName, featured && styles.leaderNameFeatured]}>
+          <Text numberOfLines={1} style={styles.leaderName}>
             {playerName(leader.player)}
           </Text>
           <Text numberOfLines={1} style={styles.leaderTeam}>
@@ -180,8 +209,8 @@ function LeaderRow({
           </Text>
         </View>
       </View>
-      <Text style={[styles.statValue, featured && styles.statValueFeatured]}>{formatLeaderValue(statType, leader.value)}</Text>
-    </Pressable>
+      <Text style={styles.statValue}>{formatLeaderValue(statType, leader.value)}</Text>
+    </View>
   );
 }
 

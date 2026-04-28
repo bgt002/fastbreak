@@ -8,15 +8,16 @@ import { colors, fonts, spacing } from "../theme";
 type AppChromeProps = PropsWithChildren<{
   activeTab: TabId;
   onTabChange: (tab: TabId) => void;
+  items?: NavItem[];
 }>;
 
-export function AppChrome({ activeTab, children, onTabChange }: AppChromeProps) {
+export function AppChrome({ activeTab, children, onTabChange, items = navItems }: AppChromeProps) {
   return (
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.screen}>
         <TopBar />
         <View style={styles.content}>{children}</View>
-        <BottomNav activeId={activeTab} items={navItems} onTabChange={onTabChange} />
+        <BottomNav activeId={activeTab} items={items} onTabChange={onTabChange} />
       </View>
     </SafeAreaView>
   );

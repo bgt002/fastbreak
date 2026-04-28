@@ -36,7 +36,7 @@ const tableWidth = rankWidth + teamWidth + standingsColumns.reduce((total, colum
 const season = getCurrentNbaSeason();
 
 export function StandingsScreen() {
-  const [conference, setConference] = useState<Conference>("east");
+  const [conference, setConference] = useState<Conference>("west");
   const { data, error, loading, reload } = useAsyncData(() => getStandings(season), []);
 
   const grouped = useMemo(() => {
@@ -67,7 +67,7 @@ export function StandingsScreen() {
         </View>
 
         <View style={styles.segmentedControl}>
-          {(["east", "west"] as const).map((item) => {
+          {(["west", "east"] as const).map((item) => {
             const active = conference === item;
 
             return (

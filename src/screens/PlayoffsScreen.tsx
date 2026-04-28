@@ -1,20 +1,15 @@
 import { LinearGradient } from "expo-linear-gradient";
-import { useMemo } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { useCallback, useMemo, useState } from "react";
+import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { EmptyState, ErrorState, LoadingState } from "../components/DataState";
 import { useAsyncData } from "../hooks/useAsyncData";
 import {
-  formatLeaderValue,
   getCurrentNbaSeason,
   getGameState,
-  getLeaders,
   getPostseasonGames,
-  playerName,
   type NbaGame,
-  type NbaLeader,
-  type NbaTeam,
-  type StatType
+  type NbaTeam
 } from "../services/nbaApi";
 import { colors, fonts, radii, spacing } from "../theme";
 
@@ -46,19 +41,19 @@ type PlayoffData = {
   eastSemis: (PlayoffSeries | null)[];
   eastCf: (PlayoffSeries | null)[];
   finals: PlayoffSeries | null;
-  leaders: { id: StatType; label: string; leader?: NbaLeader }[];
 };
-
-const playoffStatConfig: { id: StatType; shortLabel: string }[] = [
-  { id: "pts", shortLabel: "PTS" },
-  { id: "reb", shortLabel: "REB" },
-  { id: "ast", shortLabel: "AST" }
-];
 
 const season = getCurrentNbaSeason();
 
 export function PlayoffsScreen() {
-  const { data, error, loading, reload } = useAsyncData(loadPlayoffData, []);
+  const { data, error, loading, reload, silentReload } = useAsyncData(loadPlayoffData, []);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const handlePullRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await silentReload();
+    setRefreshing(false);
+  }, [silentReload]);
 
   const westColumns = useMemo<BracketColumnSpec[]>(
     () =>
@@ -84,7 +79,13 @@ export function PlayoffsScreen() {
   );
 
   return (
-    <ScrollView bounces={false} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+    <ScrollView
+      contentContainerStyle={styles.scrollContent}
+      refreshControl={
+        <RefreshControl onRefresh={handlePullRefresh} refreshing={refreshing} tintColor={colors.secondary} />
+      }
+      showsVerticalScrollIndicator={false}
+    >
       <View style={styles.hero}>
         <Text style={styles.heroTitle}>{season + 1} Playoffs</Text>
       </View>
@@ -108,18 +109,6 @@ export function PlayoffsScreen() {
               <BracketColumn column={column} key={column.id} />
             ))}
           </ScrollView>
-
-          <View style={styles.bottomSection}>
-            <View style={styles.leadersCard}>
-              <Text style={styles.leadersTitle}>Playoff Stat Leaders</Text>
-              {data.leaders.map(({ id, label, leader }) => (
-                <View key={id} style={styles.playoffLeaderRow}>
-                  <Text style={styles.playoffLeaderLabel}>{label}</Text>
-                  <Text style={styles.playoffLeaderValue}>{leader ? formatLeaderValue(id, leader.value) : "—"}</Text>
-                </View>
-              ))}
-            </View>
-          </View>
         </>
       ) : null}
     </ScrollView>
@@ -127,11 +116,7 @@ export function PlayoffsScreen() {
 }
 
 async function loadPlayoffData(): Promise<PlayoffData> {
-  const [games, ...leaderSets] = await Promise.all([
-    getPostseasonGames(season),
-    ...playoffStatConfig.map((stat) => getLeaders(stat.id, season, "playoffs"))
-  ]);
-
+  const games = await getPostseasonGames(season);
   const seriesList = aggregateSeries(games);
   const rounds = classifyRounds(seriesList);
 
@@ -143,15 +128,6 @@ async function loadPlayoffData(): Promise<PlayoffData> {
     .sort((a, b) => a.earliestDate - b.earliestDate);
   const finals = seriesList.find((s) => s.bucket === "Finals") ?? null;
 
-  const leaders = playoffStatConfig.map((stat, index) => {
-    const top = leaderSets[index]?.[0];
-    return {
-      id: stat.id,
-      label: top ? `${stat.shortLabel}: ${playerName(top.player)}` : `${stat.shortLabel}: —`,
-      leader: top
-    };
-  });
-
   return {
     westR1: padRound(westSeries.filter((s) => rounds.get(s.id) === 1), 4),
     westSemis: padRound(westSeries.filter((s) => rounds.get(s.id) === 2), 2),
@@ -159,8 +135,7 @@ async function loadPlayoffData(): Promise<PlayoffData> {
     eastR1: padRound(eastSeries.filter((s) => rounds.get(s.id) === 1), 4),
     eastSemis: padRound(eastSeries.filter((s) => rounds.get(s.id) === 2), 2),
     eastCf: padRound(eastSeries.filter((s) => rounds.get(s.id) === 3), 1),
-    finals,
-    leaders
+    finals
   };
 }
 
@@ -531,46 +506,6 @@ const styles = StyleSheet.create({
     letterSpacing: 0.4,
     lineHeight: 12,
     textTransform: "uppercase"
-  },
-  bottomSection: {
-    alignItems: "center",
-    paddingHorizontal: spacing.md
-  },
-  leadersCard: {
-    backgroundColor: colors.surfaceContainer,
-    borderColor: "rgba(255,255,255,0.06)",
-    borderRadius: radii.sm,
-    borderWidth: 1,
-    maxWidth: 420,
-    padding: spacing.md,
-    width: "100%"
-  },
-  leadersTitle: {
-    color: "rgba(224,227,229,0.54)",
-    fontFamily: fonts.bodyBold,
-    fontSize: 10,
-    letterSpacing: 0.9,
-    lineHeight: 12,
-    marginBottom: spacing.gutter,
-    textTransform: "uppercase"
-  },
-  playoffLeaderRow: {
-    alignItems: "center",
-    flexDirection: "row",
-    justifyContent: "space-between",
-    paddingVertical: 3
-  },
-  playoffLeaderLabel: {
-    color: "rgba(224,227,229,0.62)",
-    fontFamily: fonts.body,
-    fontSize: 12,
-    lineHeight: 15
-  },
-  playoffLeaderValue: {
-    color: colors.white,
-    fontFamily: fonts.bodyBold,
-    fontSize: 12,
-    lineHeight: 15
   },
   pressed: {
     opacity: 0.72
