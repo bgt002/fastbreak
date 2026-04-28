@@ -18,7 +18,16 @@ import { ScoresScreen } from "./src/screens/ScoresScreen";
 import { ScoresScreenDesktop } from "./src/screens/ScoresScreenDesktop";
 import { StandingsScreen } from "./src/screens/StandingsScreen";
 import { StatsScreen } from "./src/screens/StatsScreen";
-import { getCurrentNbaSeason, getPostseasonGames } from "./src/services/nbaApi";
+import {
+  formatIsoDate,
+  getCurrentNbaSeason,
+  getGamesByDate,
+  getPlayerSeasonStats,
+  getPostseasonGames,
+  getStandings,
+  getTeams,
+  getUpcomingPlayoffGames
+} from "./src/services/nbaApi";
 import { colors } from "./src/theme";
 
 export default function App() {
@@ -41,6 +50,20 @@ export default function App() {
       setActiveTab("scores");
     }
   }, [activeTab, hasPlayoffs]);
+
+  // Warm the cache on app start so tab switches don't trigger visible loading
+  // states. Each call hits the in-memory cache (and localStorage on web) and
+  // settles before the user can navigate. Errors are swallowed because these
+  // are best-effort prefetches; if they fail, the actual screen will retry.
+  useEffect(() => {
+    const today = formatIsoDate(new Date());
+    void getTeams().catch(() => undefined);
+    void getStandings(season).catch(() => undefined);
+    void getPostseasonGames(season).catch(() => undefined);
+    void getUpcomingPlayoffGames(season).catch(() => undefined);
+    void getGamesByDate(today).catch(() => undefined);
+    void getPlayerSeasonStats(season, "regular").catch(() => undefined);
+  }, [season]);
 
   const [fontsLoaded] = useFonts({
     Inter_400Regular,

@@ -324,18 +324,37 @@ export function calculateGamesBack(team: NbaStanding, leader?: NbaStanding) {
 }
 
 export async function getTeams() {
-  const response = await request<NbaListResponse<NbaTeam>>("/teams");
-  return response.data;
+  return withCache(
+    "teams",
+    ONE_HOUR,
+    async () => {
+      const response = await request<NbaListResponse<NbaTeam>>("/teams");
+      return response.data;
+    },
+    { persist: true }
+  );
 }
 
+// Live data — explicitly NOT cached so polling and refresh always get fresh
+// scores. Past-date games are technically immutable, but a 30-second TTL
+// keeps tab-switching snappy without stalling live updates anywhere.
 export async function getGamesByDate(date: string) {
-  const response = await request<NbaListResponse<NbaGame>>("/games", { date });
-  return response.data;
+  return withCache(`games:${date}`, ONE_MIN / 2, async () => {
+    const response = await request<NbaListResponse<NbaGame>>("/games", { date });
+    return response.data;
+  });
 }
 
 export async function getPostseasonGames(season: number) {
-  const response = await request<NbaListResponse<NbaGame>>("/playoffs", { season });
-  return response.data;
+  return withCache(
+    `playoffs:${season}`,
+    FIVE_MIN,
+    async () => {
+      const response = await request<NbaListResponse<NbaGame>>("/playoffs", { season });
+      return response.data;
+    },
+    { persist: true }
+  );
 }
 
 export async function getLeaders(
@@ -343,31 +362,57 @@ export async function getLeaders(
   season: number,
   seasonType: "regular" | "playoffs" = "regular"
 ) {
-  const response = await request<NbaListResponse<NbaLeader>>("/leaders", {
-    season,
-    stat: statType.toUpperCase(),
-    season_type: seasonType === "playoffs" ? "Playoffs" : "Regular Season"
+  return withCache(`leaders:${season}:${seasonType}:${statType}`, FIVE_MIN, async () => {
+    const response = await request<NbaListResponse<NbaLeader>>("/leaders", {
+      season,
+      stat: statType.toUpperCase(),
+      season_type: seasonType === "playoffs" ? "Playoffs" : "Regular Season"
+    });
+    return response.data;
   });
-
-  return response.data;
 }
 
 export async function getStandings(season: number) {
-  const response = await request<NbaListResponse<NbaStanding>>("/standings", { season });
-  return response.data;
+  return withCache(
+    `standings:${season}`,
+    TEN_MIN,
+    async () => {
+      const response = await request<NbaListResponse<NbaStanding>>("/standings", { season });
+      return response.data;
+    },
+    { persist: true }
+  );
 }
 
 export async function getPlayerSeasonStats(season: number, seasonType: "regular" | "playoffs" = "regular") {
-  const response = await request<NbaListResponse<NbaPlayerSeasonStats>>("/players", {
-    season,
-    season_type: seasonType === "playoffs" ? "Playoffs" : "Regular Season"
-  });
-  return response.data;
+  return withCache(
+    `players:${season}:${seasonType}`,
+    FIVE_MIN,
+    async () => {
+      const response = await request<NbaListResponse<NbaPlayerSeasonStats>>("/players", {
+        season,
+        season_type: seasonType === "playoffs" ? "Playoffs" : "Regular Season"
+      });
+      return response.data;
+    },
+    { persist: true }
+  );
 }
 
+// Box score isn't cached — it's the same live-data reasoning as /games.
 export async function getBoxScore(gameId: string) {
   const response = await request<{ data: NbaBoxScore }>("/boxscore", { gameId });
   return response.data;
+}
+
+export async function getUpcomingPlayoffGames(season: number, days = 14) {
+  return withCache(`upcoming:${season}:${days}`, FIVE_MIN, async () => {
+    const response = await request<NbaListResponse<NbaUpcomingPlayoffGame>>(
+      "/upcoming-playoff-games",
+      { season, days }
+    );
+    return response.data;
+  });
 }
 
 export type NbaUpcomingPlayoffGame = {
@@ -380,13 +425,76 @@ export type NbaUpcomingPlayoffGame = {
   season: number;
 };
 
-export async function getUpcomingPlayoffGames(season: number, days = 14) {
-  const response = await request<NbaListResponse<NbaUpcomingPlayoffGame>>(
-    "/upcoming-playoff-games",
-    { season, days }
-  );
-  return response.data;
+// ---------------------------------------------------------------------------
+// Cache
+// ---------------------------------------------------------------------------
+// Two-tier cache:
+//   1. In-memory Map keyed by request signature; clears on app reload.
+//   2. localStorage write-through for endpoints flagged with `persist: true`,
+//      so a fresh tab/PWA session boots with last-known data immediately.
+// Live endpoints (/games, /boxscore) skip the cache entirely so polling stays
+// responsive — only the static-ish stuff (teams, standings, season stats) is
+// cached. Bumping STORAGE_VERSION invalidates persisted data after a shape
+// change.
+
+type CacheEntry<T> = { data: T; expiresAt: number };
+
+const memCache = new Map<string, CacheEntry<unknown>>();
+const STORAGE_PREFIX = "fb:cache:v1:";
+
+function readPersistedEntry<T>(key: string): CacheEntry<T> | null {
+  if (typeof localStorage === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(STORAGE_PREFIX + key);
+    if (!raw) return null;
+    return JSON.parse(raw) as CacheEntry<T>;
+  } catch {
+    return null;
+  }
 }
+
+function writePersistedEntry<T>(key: string, entry: CacheEntry<T>): void {
+  if (typeof localStorage === "undefined") return;
+  try {
+    localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(entry));
+  } catch {
+    // QuotaExceededError or private-mode lockout — silently fall through, the
+    // in-memory cache is still doing its job for the rest of the session.
+  }
+}
+
+async function withCache<T>(
+  key: string,
+  ttlMs: number,
+  fetcher: () => Promise<T>,
+  options: { persist?: boolean } = {}
+): Promise<T> {
+  const now = Date.now();
+
+  const memHit = memCache.get(key) as CacheEntry<T> | undefined;
+  if (memHit && memHit.expiresAt > now) {
+    return memHit.data;
+  }
+
+  if (options.persist) {
+    const persisted = readPersistedEntry<T>(key);
+    if (persisted && persisted.expiresAt > now) {
+      memCache.set(key, persisted);
+      return persisted.data;
+    }
+  }
+
+  const data = await fetcher();
+  const entry: CacheEntry<T> = { data, expiresAt: now + ttlMs };
+  memCache.set(key, entry);
+  if (options.persist) writePersistedEntry(key, entry);
+  return data;
+}
+
+const ONE_MIN = 60 * 1000;
+const FIVE_MIN = 5 * ONE_MIN;
+const TEN_MIN = 10 * ONE_MIN;
+const ONE_HOUR = 60 * ONE_MIN;
 
 type QueryValue = boolean | number | string | undefined;
 

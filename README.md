@@ -133,7 +133,64 @@ Expo Go in the App Store ships a runtime locked to one Expo SDK version. This pr
 - **Past-date games.** `ScoreboardV2` doesn't always update its `GAME_STATUS_TEXT` for past dates, so the backend treats any game on a date strictly before today's ET date as `Final` regardless of what status text says.
 - **Tip-off times.** Stored as ISO 8601 with the `America/New_York` offset, then formatted with `toLocaleTimeString()` on the device — so the user sees their own local time and timezone abbreviation (e.g., `7:30 PM PDT`).
 - **Game IDs are strings.** NBA game IDs have leading zeros (`0022500100`) — keep them as strings end-to-end or `/boxscore` lookups will fail.
-- **Deployment.** Backend is deploy-ready as-is. To push to Railway / Render / Fly: point the service at `backend/`, set the start command to `uvicorn main:app --host 0.0.0.0 --port $PORT`, then update `EXPO_PUBLIC_NBA_API_BASE_URL` to the deployed URL.
+## Deploying
+
+Two free services: **Google Cloud Run** for the backend, **Cloudflare Pages** for the web frontend. Default URLs only — no custom domain needed.
+
+### Backend → Cloud Run
+
+One-time setup (~15 min):
+1. Create a GCP project at [console.cloud.google.com](https://console.cloud.google.com). Enable billing (free tier still requires a card on file).
+2. Enable the Cloud Run and Cloud Build APIs in the project.
+3. Install the [gcloud CLI](https://cloud.google.com/sdk/docs/install) and run:
+   ```powershell
+   gcloud auth login
+   gcloud config set project <your-project-id>
+   ```
+
+Deploy from the repo root:
+```powershell
+cd backend
+gcloud run deploy fastbreak-backend `
+  --source . `
+  --region us-central1 `
+  --allow-unauthenticated `
+  --port 8080 `
+  --memory 512Mi `
+  --min-instances 0 `
+  --max-instances 3
+```
+
+`--source .` triggers Cloud Build to build the [Dockerfile](backend/Dockerfile) and push the image. Subsequent deploys are the same one-liner.
+
+When it finishes, gcloud prints a URL like `https://fastbreak-backend-abc123-uc.a.run.app`. That's your backend.
+
+Verify:
+```powershell
+curl https://fastbreak-backend-abc123-uc.a.run.app/health
+# {"ok":true,"teams_loaded":30}
+```
+
+### Frontend → Cloudflare Pages
+
+1. Push the repo to GitHub if it isn't already.
+2. In the [Cloudflare dashboard](https://dash.cloudflare.com/) → **Workers & Pages** → **Create application** → **Pages** → **Connect to Git** → pick the repo.
+3. Configure the build:
+   - **Framework preset**: None
+   - **Build command**: `npm run build:web`
+   - **Build output directory**: `dist`
+4. Under **Environment variables**, add:
+   - `EXPO_PUBLIC_NBA_API_BASE_URL` = your Cloud Run URL from above
+5. Click **Save and Deploy**.
+
+The first build takes ~2 min. Cloudflare gives you a permanent URL like `https://fastbreak.pages.dev`. Every push to `master` redeploys automatically.
+
+The [public/_redirects](public/_redirects) file in the repo is what tells Pages to serve `index.html` for unknown routes (so deep links and refreshes don't 404).
+
+### After deploying
+
+- **Tighten CORS.** In [backend/main.py](backend/main.py) change `allow_origins=["*"]` to `allow_origins=["https://fastbreak.pages.dev"]` (your actual Pages URL) and redeploy. The wildcard is fine for development but unnecessary in production.
+- **Local dev still works.** `.env` is gitignored, so your LAN-IP setting doesn't ship to Cloudflare. The Cloud Run URL is set in Cloudflare's environment variables and only applies to the deployed build.
 
 ## Type-checking
 
