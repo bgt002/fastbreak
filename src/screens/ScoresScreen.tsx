@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { Image, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Image, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { BoxScoreModal } from "../components/BoxScoreModal";
 import { EmptyState, ErrorState, LoadingState } from "../components/DataState";
@@ -21,10 +21,32 @@ export function ScoresScreen() {
   const dateOptions = useMemo(() => buildDateOptions(), []);
   const [selectedDate, setSelectedDate] = useState(today);
   const [openGame, setOpenGame] = useState<NbaGame | null>(null);
-  const { data: games, error, loading, reload } = useAsyncData(() => getGamesByDate(selectedDate), [selectedDate]);
+  const [refreshing, setRefreshing] = useState(false);
+  const { data: games, error, loading, reload, silentReload } = useAsyncData(() => getGamesByDate(selectedDate), [selectedDate]);
+
+  const hasLiveGame = games?.some((game) => getGameState(game) === "live") ?? false;
+  useEffect(() => {
+    if (selectedDate !== today || !hasLiveGame) {
+      return;
+    }
+    const interval = setInterval(silentReload, 5000);
+    return () => clearInterval(interval);
+  }, [selectedDate, today, hasLiveGame, silentReload]);
+
+  const handlePullRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await silentReload();
+    setRefreshing(false);
+  }, [silentReload]);
 
   return (
-    <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false} bounces={false}>
+    <ScrollView
+      contentContainerStyle={styles.scrollContent}
+      showsVerticalScrollIndicator={false}
+      refreshControl={
+        <RefreshControl refreshing={refreshing} onRefresh={handlePullRefresh} tintColor={colors.secondary} />
+      }
+    >
       <View style={styles.contentShell}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.dateScroller}>
           {dateOptions.map((date) => (
@@ -50,9 +72,6 @@ export function ScoresScreen() {
             <View style={styles.liveDot} />
             <Text style={styles.sectionTitle}>NBA Games</Text>
           </View>
-          <Pressable accessibilityRole="button" hitSlop={8} onPress={reload}>
-            <Text style={styles.viewAll}>Refresh</Text>
-          </Pressable>
         </View>
 
         {loading ? <LoadingState /> : null}

@@ -31,9 +31,14 @@ export type NbaBoxScorePlayer = {
   minutes: string | null;
   points: number;
   rebounds: number;
+  oreb: number;
+  dreb: number;
   assists: number;
   steals: number;
   blocks: number;
+  turnovers: number;
+  fouls: number;
+  plus_minus: number;
   fgm: number;
   fga: number;
   fg3m: number;

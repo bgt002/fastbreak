@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from nba_api.live.nba.endpoints import boxscore as live_boxscore, scoreboard as live_scoreboard
 from nba_api.stats.endpoints import (
     boxscoretraditionalv2,
     leaguegamefinder,
@@ -127,8 +128,150 @@ def list_games(date: str = Query(..., description="YYYY-MM-DD")):
             _build_game(game_id, parsed, header, home_team, visitor_team, home_line, visitor_line, False)
         )
 
+    # ScoreboardV2 lags significantly for live games, so overlay realtime data
+    # from cdn.nba.com (the same feed the official NBA app uses).
+    if parsed.date() == today_et:
+        _apply_live_overlay(games)
+
     games.sort(key=lambda g: g.get("datetime") or g.get("date") or "")
     return {"data": games}
+
+
+def _apply_live_overlay(games: list[dict[str, Any]]) -> None:
+    live_states = _fetch_live_states()
+    if not live_states:
+        return
+    for game in games:
+        live = live_states.get(game["id"])
+        if not live:
+            continue
+        status_id = live["status_id"]
+        if status_id == 2:  # Live
+            game["period"] = live["period"] or game["period"]
+            game["time"] = live["clock"]
+            game["status"] = live["status_text"] or game["status"]
+        elif status_id == 3:  # Final
+            game["status"] = "Final"
+            game["period"] = max(int(live["period"] or 0), 4)
+            game["time"] = None
+        if status_id in (2, 3):
+            game["home_team_score"] = live["home_score"]
+            game["visitor_team_score"] = live["away_score"]
+
+
+def _fetch_live_states() -> dict[str, dict[str, Any]]:
+    try:
+        sb = live_scoreboard.ScoreBoard()
+        payload = sb.get_dict()
+    except Exception:
+        return {}
+
+    games = (payload.get("scoreboard") or {}).get("games") or []
+    out: dict[str, dict[str, Any]] = {}
+    for g in games:
+        gid = g.get("gameId")
+        if not gid:
+            continue
+        out[gid] = {
+            "status_text": (g.get("gameStatusText") or "").strip(),
+            "status_id": int(g.get("gameStatus") or 0),
+            "period": int(g.get("period") or 0),
+            "clock": _format_live_clock(g.get("gameClock")),
+            "home_score": _safe_int((g.get("homeTeam") or {}).get("score")),
+            "away_score": _safe_int((g.get("awayTeam") or {}).get("score")),
+        }
+    return out
+
+
+_CLOCK_RE = re.compile(r"PT(\d+)M([\d.]+)S")
+
+
+def _format_live_clock(clock: str | None) -> str | None:
+    if not clock:
+        return None
+    match = _CLOCK_RE.match(clock)
+    if not match:
+        return None
+    minutes = int(match.group(1))
+    seconds = int(float(match.group(2)))
+    if minutes == 0 and seconds == 0:
+        return None
+    return f"{minutes}:{seconds:02d}"
+
+
+def _format_live_minutes(value: Any) -> str | None:
+    if value is None or value == "":
+        return None
+    text = str(value)
+    match = _CLOCK_RE.match(text)
+    if not match:
+        return text
+    minutes = int(match.group(1))
+    seconds = int(float(match.group(2)))
+    return f"{minutes}:{seconds:02d}"
+
+
+def _try_live_boxscore(game_id: str) -> dict[str, Any] | None:
+    try:
+        bs = live_boxscore.BoxScore(game_id=game_id)
+        payload = bs.get_dict()
+    except Exception:
+        return None
+
+    game = payload.get("game") or {}
+    if not game:
+        return None
+
+    teams: list[dict[str, Any]] = []
+    for side in ("homeTeam", "awayTeam"):
+        team_data = game.get(side) or {}
+        team_id = team_data.get("teamId")
+        team_meta = _TEAM_LOOKUP.get(team_id)
+        if not team_meta:
+            continue
+        players: list[dict[str, Any]] = []
+        for p in team_data.get("players") or []:
+            stats = p.get("statistics") or {}
+            full_name = (p.get("name") or f"{p.get('firstName', '')} {p.get('familyName', '')}").strip()
+            players.append(
+                {
+                    "player_id": p.get("personId"),
+                    "name": full_name,
+                    "starter": str(p.get("starter") or "").strip() == "1",
+                    "minutes": _format_live_minutes(stats.get("minutes") or stats.get("minutesCalculated")),
+                    "points": _safe_int(stats.get("points")),
+                    "rebounds": _safe_int(stats.get("reboundsTotal")),
+                    "oreb": _safe_int(stats.get("reboundsOffensive")),
+                    "dreb": _safe_int(stats.get("reboundsDefensive")),
+                    "assists": _safe_int(stats.get("assists")),
+                    "steals": _safe_int(stats.get("steals")),
+                    "blocks": _safe_int(stats.get("blocks")),
+                    "turnovers": _safe_int(stats.get("turnovers")),
+                    "fouls": _safe_int(stats.get("foulsPersonal")),
+                    "plus_minus": _safe_int(stats.get("plusMinusPoints")),
+                    "fgm": _safe_int(stats.get("fieldGoalsMade")),
+                    "fga": _safe_int(stats.get("fieldGoalsAttempted")),
+                    "fg3m": _safe_int(stats.get("threePointersMade")),
+                    "fg3a": _safe_int(stats.get("threePointersAttempted")),
+                    "ftm": _safe_int(stats.get("freeThrowsMade")),
+                    "fta": _safe_int(stats.get("freeThrowsAttempted")),
+                }
+            )
+        if not players:
+            continue
+        players.sort(key=lambda pl: (0 if pl["starter"] else 1))
+        teams.append(
+            {
+                "team": team_meta,
+                "score": _safe_int(team_data.get("score")),
+                "players": players,
+            }
+        )
+
+    if not teams:
+        return None
+
+    return {"game_id": game_id, "teams": teams}
 
 
 def _list_past_games(parsed_date: datetime) -> list[dict[str, Any]]:
@@ -332,6 +475,12 @@ def list_playoff_games(season: int = Query(..., description="Starting year, e.g.
 
 @app.get("/boxscore")
 def get_boxscore(game_id: str = Query(..., alias="gameId", description="Full 10-char NBA game ID, e.g., 0022500100")):
+    # cdn.nba.com's live boxscore populates in realtime during games; the
+    # stats.nba.com V2 endpoint only fills in well after the final buzzer.
+    live_data = _try_live_boxscore(game_id)
+    if live_data:
+        return {"data": live_data}
+
     bs = _call_nba(lambda: boxscoretraditionalv2.BoxScoreTraditionalV2(game_id=game_id, timeout=30))
     player_rows = _rows_to_dicts(bs.player_stats.get_dict())
     team_rows = _rows_to_dicts(bs.team_stats.get_dict())
@@ -361,9 +510,14 @@ def get_boxscore(game_id: str = Query(..., alias="gameId", description="Full 10-
                 "minutes": prow.get("MIN"),
                 "points": _safe_int(prow.get("PTS")),
                 "rebounds": _safe_int(prow.get("REB")),
+                "oreb": _safe_int(prow.get("OREB")),
+                "dreb": _safe_int(prow.get("DREB")),
                 "assists": _safe_int(prow.get("AST")),
                 "steals": _safe_int(prow.get("STL")),
                 "blocks": _safe_int(prow.get("BLK")),
+                "turnovers": _safe_int(prow.get("TO")),
+                "fouls": _safe_int(prow.get("PF")),
+                "plus_minus": _safe_int(prow.get("PLUS_MINUS")),
                 "fgm": _safe_int(prow.get("FGM")),
                 "fga": _safe_int(prow.get("FGA")),
                 "fg3m": _safe_int(prow.get("FG3M")),
