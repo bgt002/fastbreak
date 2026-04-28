@@ -31,6 +31,13 @@ const tags = `
          mounts. The actual app uses #050B14 too. */
       html, body, #root { background-color: #050B14; }
       html { overscroll-behavior: none; }
+      /* Force the React root to fill the full visual viewport, including the
+         iOS home-indicator area. Without this, html/body/#root collapse to
+         content height and the absolutely-positioned bottom nav (bottom: 0)
+         lands above the home indicator, leaving a dark page-bg gap below it.
+         100dvh is the dynamic viewport unit — in standalone PWA mode it
+         equals the full screen height. */
+      html, body, #root { height: 100%; min-height: 100dvh; }
     </style>
 `;
 
