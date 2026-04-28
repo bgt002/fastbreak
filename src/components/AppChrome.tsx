@@ -90,6 +90,7 @@ function BottomNav({
 }
 
 const topInset = Platform.OS === "android" ? NativeStatusBar.currentHeight ?? 0 : 0;
+const BOTTOM_NAV_CONTENT_HEIGHT = 56;
 
 // On web we let the topbar / bottom nav extend full-bleed, then apply
 // env(safe-area-inset-*) padding inside them so their dark backgrounds slide
@@ -99,9 +100,9 @@ const topInset = Platform.OS === "android" ? NativeStatusBar.currentHeight ?? 0 
 // through to inline style as-is.
 const webTopBarSafeArea = (Platform.OS === "web"
   ? {
-      paddingTop: "env(safe-area-inset-top)",
-      paddingLeft: "env(safe-area-inset-left)",
-      paddingRight: "env(safe-area-inset-right)"
+      paddingTop: "var(--app-safe-area-top, env(safe-area-inset-top, 0px))",
+      paddingLeft: "env(safe-area-inset-left, 0px)",
+      paddingRight: "env(safe-area-inset-right, 0px)"
     }
   : null) as ViewStyle | null;
 
@@ -113,18 +114,28 @@ const webTopBarSafeArea = (Platform.OS === "web"
 // `position: absolute` (anchors to React root, which iOS resizes between
 // launches) and `position: fixed` (anchors to the visual viewport, which
 // iOS animates during launch transitions) produced visible "creeping up"
-// of the nav between sessions. With the screen sized to 100dvh in
-// postbuild-pwa.js and the nav as a normal flex child at the end of the
-// column, the nav sits at the bottom by layout — stable across reopens.
+// of the nav between sessions. With the screen sized by postbuild-pwa.js and
+// the nav as a normal flex child, it sits at the bottom by layout - stable
+// across reopens.
+//
+// iOS can still report a viewport that ends above the home-indicator strip.
+// postbuild-pwa.js exposes that missing bottom strip as
+// --app-bottom-extension. We add it as a negative margin so layout still only
+// reserves the tappable nav row, while the nav's own background extends down
+// to the physical screen edge. --app-safe-area-bottom is the larger of the CSS
+// safe-area inset and that measured gap, so the buttons remain above the home
+// bar in both viewport modes.
 const webBottomNavSafeArea = (Platform.OS === "web"
   ? {
       position: "relative",
       bottom: "auto",
       left: "auto",
       right: "auto",
-      paddingBottom: "env(safe-area-inset-bottom)",
-      paddingLeft: "env(safe-area-inset-left)",
-      paddingRight: "env(safe-area-inset-right)"
+      height: `calc(${BOTTOM_NAV_CONTENT_HEIGHT}px + var(--app-safe-area-bottom, env(safe-area-inset-bottom, 0px)))`,
+      marginBottom: "calc(var(--app-bottom-extension, 0px) * -1)",
+      paddingBottom: "var(--app-safe-area-bottom, env(safe-area-inset-bottom, 0px))",
+      paddingLeft: "env(safe-area-inset-left, 0px)",
+      paddingRight: "env(safe-area-inset-right, 0px)"
     }
   : null) as ViewStyle | null;
 
@@ -196,7 +207,8 @@ const styles = StyleSheet.create({
   bottomNavInner: {
     alignSelf: "center",
     flexDirection: "row",
-    height: 56,
+    flexShrink: 0,
+    height: BOTTOM_NAV_CONTENT_HEIGHT,
     maxWidth: 1024,
     width: "100%"
   },

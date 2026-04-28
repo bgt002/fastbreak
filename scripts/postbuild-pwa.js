@@ -32,15 +32,19 @@ const tags = `
       html, body, #root { background-color: #050B14; margin: 0; padding: 0; }
       html { overscroll-behavior: none; }
       html, body { height: 100%; width: 100%; }
-      /* Why a JS-driven --app-vh instead of a CSS unit: in iOS PWA standalone
-         mode, every CSS viewport unit (vh, dvh, lvh, svh) AND position:fixed
-         + inset:0 anchor to the *safe* viewport — they all exclude the
-         home-indicator strip even with viewport-fit=cover. That leaves a
-         ~34px band of body background visible below the bottom nav. The only
-         reliable measurement that returns the *full* visual viewport height
-         (status-bar through home-indicator inclusive) is window.innerHeight
-         read from JS. The script below writes it into --app-vh and refreshes
-         on resize/visualViewport changes. */
+      :root {
+        --app-vh: 100vh;
+        --app-bottom-extension: 0px;
+        --app-safe-area-top: env(safe-area-inset-top, 0px);
+        --app-safe-area-bottom: max(
+          env(safe-area-inset-bottom, 0px),
+          var(--app-bottom-extension)
+        );
+      }
+      /* iOS standalone can expose either a full viewport or a safe viewport
+         that stops above the home indicator. The React root follows the
+         reported viewport; the bottom nav extends itself by
+         --app-bottom-extension when WebKit leaves a physical strip below it. */
       #root {
         display: flex;
         flex-direction: column;
@@ -49,17 +53,63 @@ const tags = `
     </style>
     <script>
       (function () {
-        function setHeight() {
-          document.documentElement.style.setProperty(
-            "--app-vh",
-            window.innerHeight + "px"
+        function isIos() {
+          var ua = window.navigator.userAgent || "";
+          return (
+            /iPad|iPhone|iPod/.test(ua) ||
+            (window.navigator.platform === "MacIntel" &&
+              window.navigator.maxTouchPoints > 1)
           );
         }
-        setHeight();
-        window.addEventListener("resize", setHeight);
-        window.addEventListener("orientationchange", setHeight);
+
+        function isStandalone() {
+          return (
+            window.navigator.standalone === true ||
+            window.matchMedia("(display-mode: standalone)").matches
+          );
+        }
+
+        function getScreenHeight() {
+          if (!window.screen) return 0;
+          return window.matchMedia("(orientation: portrait)").matches
+            ? Math.max(window.screen.width, window.screen.height)
+            : Math.min(window.screen.width, window.screen.height);
+        }
+
+        function setViewportVars() {
+          var viewport = window.visualViewport;
+          var viewportHeight = Math.round(
+            (viewport && viewport.height) || window.innerHeight || 0
+          );
+          document.documentElement.style.setProperty(
+            "--app-vh",
+            viewportHeight + "px"
+          );
+
+          var bottomExtension = 0;
+          if (isIos() && isStandalone()) {
+            var screenHeight = getScreenHeight();
+            var viewportTop = Math.round((viewport && viewport.offsetTop) || 0);
+            bottomExtension = Math.round(
+              screenHeight - viewportTop - viewportHeight
+            );
+            if (bottomExtension < 0 || bottomExtension > 128) {
+              bottomExtension = 0;
+            }
+          }
+
+          document.documentElement.style.setProperty(
+            "--app-bottom-extension",
+            bottomExtension + "px"
+          );
+        }
+
+        setViewportVars();
+        window.addEventListener("resize", setViewportVars);
+        window.addEventListener("orientationchange", setViewportVars);
         if (window.visualViewport) {
-          window.visualViewport.addEventListener("resize", setHeight);
+          window.visualViewport.addEventListener("resize", setViewportVars);
+          window.visualViewport.addEventListener("scroll", setViewportVars);
         }
       })();
     </script>
