@@ -29,15 +29,21 @@ const tags = `
       /* Match the app's dark theme on the host page so iOS PWA standalone mode
          doesn't flash a white safe area above the status bar before React
          mounts. The actual app uses #050B14 too. */
-      html, body, #root { background-color: #050B14; }
+      html, body, #root { background-color: #050B14; margin: 0; padding: 0; }
       html { overscroll-behavior: none; }
-      /* Force the React root to fill the full visual viewport, including the
-         iOS home-indicator area. Without this, html/body/#root collapse to
-         content height and the absolutely-positioned bottom nav (bottom: 0)
-         lands above the home indicator, leaving a dark page-bg gap below it.
-         100dvh is the dynamic viewport unit — in standalone PWA mode it
-         equals the full screen height. */
-      html, body, #root { height: 100%; min-height: 100dvh; }
+      /* Make the React root a flex column sized to exactly 100dvh. The
+         AppChrome's screen View uses flex: 1 inside, so it fills 100dvh and
+         lays out [TopBar | content (flex:1) | BottomNav] from top to bottom.
+         With the nav as a normal flex child (see AppChrome's webBottomNavSafeArea
+         which cancels its position:absolute), it sits at the bottom of this
+         stable column by layout — not by viewport-relative anchoring, which
+         iOS PWA animates inconsistently across launches. */
+      html, body { height: 100%; }
+      #root {
+        display: flex;
+        flex-direction: column;
+        height: 100dvh;
+      }
     </style>
 `;
 

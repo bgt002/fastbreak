@@ -105,35 +105,34 @@ const webTopBarSafeArea = (Platform.OS === "web"
     }
   : null) as ViewStyle | null;
 
-// On web we additionally pin the nav with `position: fixed` instead of
-// `absolute`. With `absolute`, the nav anchors to the React-root container,
-// which on iOS PWA standalone doesn't always extend to the actual viewport
-// bottom — leaving a strip of page background visible below the nav. `fixed`
-// anchors to the viewport itself, so the nav lands flush with the screen
-// bottom regardless of root height.
+// On web we put the nav back into the normal flex flow (cancelling the
+// `position: absolute` from styles.bottomNav) so its position is determined
+// by layout, not by viewport-relative anchoring.
 //
-// `transition: none` + `transform: translateZ(0)` defend against the "nav
-// slowly creeps up on relaunch" symptom on iOS PWA: when the app reopens,
-// iOS animates env(safe-area-inset-bottom) from 0 to its final value, and
-// any default CSS transition on padding/position would animate the labels
-// upward over those few hundred ms. Forcing the nav onto its own GPU layer
-// (translateZ) and disabling transitions makes the inset apply instantly.
+// Why: iOS PWA standalone has unstable viewport-anchored positioning. Both
+// `position: absolute` (anchors to React root, which iOS resizes between
+// launches) and `position: fixed` (anchors to the visual viewport, which
+// iOS animates during launch transitions) produced visible "creeping up"
+// of the nav between sessions. With the screen sized to 100dvh in
+// postbuild-pwa.js and the nav as a normal flex child at the end of the
+// column, the nav sits at the bottom by layout — stable across reopens.
 const webBottomNavSafeArea = (Platform.OS === "web"
   ? {
-      position: "fixed",
+      position: "relative",
+      bottom: "auto",
+      left: "auto",
+      right: "auto",
       paddingBottom: "env(safe-area-inset-bottom)",
       paddingLeft: "env(safe-area-inset-left)",
-      paddingRight: "env(safe-area-inset-right)",
-      transition: "none",
-      transform: [{ translateY: 0 }]
+      paddingRight: "env(safe-area-inset-right)"
     }
   : null) as ViewStyle | null;
 
-// Bottom padding screens should add to scrollable content so the last items
-// clear the absolutely-positioned BottomNav (which is `nav height + iOS home
-// indicator inset` on web). Pass to ScrollView/FlatList contentContainerStyle.
-export const NAV_CLEARANCE: number | string =
-  Platform.OS === "web" ? "calc(86px + env(safe-area-inset-bottom))" : 86;
+// Visual breathing room between the last list item and the nav. With the nav
+// in flex flow on web, content already sits above it (no overlap), so this
+// is just spacing — not nav clearance. Native still uses `position: absolute`
+// for the nav, so screens there need real clearance equal to the nav height.
+export const NAV_CLEARANCE: number = Platform.OS === "web" ? 24 : 86;
 
 const styles = StyleSheet.create({
   safeArea: {
