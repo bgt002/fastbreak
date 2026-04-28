@@ -152,15 +152,18 @@ export function ScoresScreen() {
     setSelectedDate(today);
     setVisibleWeekIndex(TODAY_WEEK_INDEX);
     if (pageWidth > 0) {
-      weekListRef.current?.scrollToIndex({ index: TODAY_WEEK_INDEX, animated: true });
+      weekListRef.current?.scrollToOffset({
+        offset: TODAY_WEEK_INDEX * pageWidth,
+        animated: true
+      });
     }
   }, [today, pageWidth]);
 
-  // FlatList's `initialScrollIndex` prop is unreliable on react-native-web
-  // and some Android setups — the list sometimes lands at index 0 instead of
-  // TODAY_WEEK_INDEX. This one-shot effect forces the strip onto the correct
-  // week the moment `pageWidth` becomes non-zero (i.e., as soon as the list
-  // is actually rendered for the first time).
+  // FlatList's `initialScrollIndex` is unreliable on react-native-web (the
+  // list sometimes lands at index 0 anyway). Force the correct position the
+  // first time `pageWidth` is known, using `scrollToOffset` rather than
+  // `scrollToIndex` because the offset call doesn't depend on the
+  // getItemLayout/measurement plumbing that flakes on web.
   const hasForcedInitialScroll = useRef(false);
   useEffect(() => {
     if (hasForcedInitialScroll.current || pageWidth <= 0) return;
@@ -169,10 +172,13 @@ export function ScoresScreen() {
     if (idx < 0) return;
     hasForcedInitialScroll.current = true;
     setVisibleWeekIndex(idx);
-    // requestAnimationFrame waits one frame so the FlatList has actually
-    // mounted before we tell it to scroll, otherwise the call is a no-op.
+    // Two RAFs to give the FlatList two layout passes before we scroll —
+    // belt-and-suspenders against initial-render timing differences across
+    // platforms.
     requestAnimationFrame(() => {
-      weekListRef.current?.scrollToIndex({ index: idx, animated: false });
+      requestAnimationFrame(() => {
+        weekListRef.current?.scrollToOffset({ offset: idx * pageWidth, animated: false });
+      });
     });
   }, [pageWidth, weeks, selectedDate]);
 
@@ -184,7 +190,7 @@ export function ScoresScreen() {
     if (idx >= 0 && idx !== visibleWeekIndex) {
       setVisibleWeekIndex(idx);
       if (pageWidth > 0) {
-        weekListRef.current?.scrollToIndex({ index: idx, animated: true });
+        weekListRef.current?.scrollToOffset({ offset: idx * pageWidth, animated: true });
       }
     }
     // We only want to re-page when selectedDate changes, not when the index is
