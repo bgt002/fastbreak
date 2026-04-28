@@ -135,41 +135,63 @@ Expo Go in the App Store ships a runtime locked to one Expo SDK version. This pr
 - **Game IDs are strings.** NBA game IDs have leading zeros (`0022500100`) — keep them as strings end-to-end or `/boxscore` lookups will fail.
 ## Deploying
 
-Two free services: **Google Cloud Run** for the backend, **Cloudflare Pages** for the web frontend. Default URLs only — no custom domain needed.
+Two free services: **Fly.io** for the backend (always-on, no cold starts), **Cloudflare Pages** for the web frontend. Default subdomains only — no custom domain needed.
 
-### Backend → Cloud Run
+### Backend → Fly.io
 
-One-time setup (~15 min):
-1. Create a GCP project at [console.cloud.google.com](https://console.cloud.google.com). Enable billing (free tier still requires a card on file).
-2. Enable the Cloud Run and Cloud Build APIs in the project.
-3. Install the [gcloud CLI](https://cloud.google.com/sdk/docs/install) and run:
+One-time setup (~5 min):
+1. Sign up at [fly.io/app/sign-up](https://fly.io/app/sign-up). A payment card is required for verification but the free allowance covers our usage.
+2. Install the `flyctl` CLI:
    ```powershell
-   gcloud auth login
-   gcloud config set project <your-project-id>
+   # Windows PowerShell
+   iwr https://fly.io/install.ps1 -useb | iex
+   ```
+   On macOS/Linux: `curl -L https://fly.io/install.sh | sh`. Restart your terminal so `flyctl` is on `PATH`.
+3. Sign in:
+   ```powershell
+   fly auth login
    ```
 
-Deploy from the repo root:
+Deploy from `backend/`:
 ```powershell
 cd backend
-gcloud run deploy fastbreak-backend `
-  --source . `
-  --region us-central1 `
-  --allow-unauthenticated `
-  --port 8080 `
-  --memory 512Mi `
-  --min-instances 0 `
-  --max-instances 3
+fly launch
 ```
 
-`--source .` triggers Cloud Build to build the [Dockerfile](backend/Dockerfile) and push the image. Subsequent deploys are the same one-liner.
+`fly launch` is interactive. Recommended answers:
+- **App name**: `fastbreak-backend` (or any globally unique name; Fly will append a suffix if taken)
+- **Region**: pick the one closest to you (`sjc` = San Jose, `lax` = Los Angeles, `iad` = Virginia, etc.)
+- **Postgres / Redis**: No to both — we don't need them
+- **Deploy now**: Yes
 
-When it finishes, gcloud prints a URL like `https://fastbreak-backend-abc123-uc.a.run.app`. That's your backend.
+It auto-generates a `fly.toml` from the [Dockerfile](backend/Dockerfile), builds remotely, and deploys. Takes ~3-5 min on first run.
+
+When it finishes, the URL is printed — something like `https://fastbreak-backend.fly.dev`. That's your backend.
 
 Verify:
 ```powershell
-curl https://fastbreak-backend-abc123-uc.a.run.app/health
+curl https://fastbreak-backend.fly.dev/health
 # {"ok":true,"teams_loaded":30}
 ```
+
+Subsequent deploys (after editing `backend/`) are just:
+```powershell
+fly deploy
+```
+
+To keep the machine always-on (no cold starts) and pin to one VM, edit the generated `fly.toml`:
+```toml
+[http_service]
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
+```
+
+Then `fly deploy` again to apply. One always-on `shared-cpu-1x@256MB` VM fits comfortably inside the free allowance.
 
 ### Frontend → Cloudflare Pages
 
@@ -180,17 +202,50 @@ curl https://fastbreak-backend-abc123-uc.a.run.app/health
    - **Build command**: `npm run build:web`
    - **Build output directory**: `dist`
 4. Under **Environment variables**, add:
-   - `EXPO_PUBLIC_NBA_API_BASE_URL` = your Cloud Run URL from above
+   - `EXPO_PUBLIC_NBA_API_BASE_URL` = your Fly.io URL from above (no trailing slash)
 5. Click **Save and Deploy**.
 
 The first build takes ~2 min. Cloudflare gives you a permanent URL like `https://fastbreak.pages.dev`. Every push to `master` redeploys automatically.
 
-The [public/_redirects](public/_redirects) file in the repo is what tells Pages to serve `index.html` for unknown routes (so deep links and refreshes don't 404).
+The [public/_redirects](public/_redirects) file in the repo tells Pages to serve `index.html` for unknown routes (so deep links and refreshes don't 404).
 
 ### After deploying
 
-- **Tighten CORS.** In [backend/main.py](backend/main.py) change `allow_origins=["*"]` to `allow_origins=["https://fastbreak.pages.dev"]` (your actual Pages URL) and redeploy. The wildcard is fine for development but unnecessary in production.
-- **Local dev still works.** `.env` is gitignored, so your LAN-IP setting doesn't ship to Cloudflare. The Cloud Run URL is set in Cloudflare's environment variables and only applies to the deployed build.
+- **Tighten CORS.** In [backend/main.py](backend/main.py) change `allow_origins=["*"]` to `allow_origins=["https://fastbreak.pages.dev"]` (your actual Pages URL) and `fly deploy` again. The wildcard is fine for development but unnecessary in production.
+- **Local dev still works.** `.env` is gitignored, so your LAN-IP setting doesn't ship to Cloudflare. The Fly URL is set in Cloudflare's environment variables and only applies to the deployed build.
+- **Watching logs.** `fly logs` for the backend, Cloudflare's "Deployments" tab for the frontend.
+
+## PWA / Add to Home Screen
+
+The web build is configured as a Progressive Web App, so when iOS or Android users tap "Add to Home Screen" they get a standalone app icon that opens without browser chrome (no Safari address bar / tab strip).
+
+How it works:
+- [public/manifest.webmanifest](public/manifest.webmanifest) declares the app's name, theme colors, display mode (`standalone`), and icon set.
+- [scripts/postbuild-pwa.js](scripts/postbuild-pwa.js) runs after `expo export --platform web` and injects the iOS-specific `<meta>` tags into `dist/index.html`. iOS Safari only honors the standalone-mode flag if it's in the initial HTML, so a postbuild step is required.
+- `npm run build:web` chains both steps.
+
+### Icons
+
+Put PNGs in `public/icons/` so they get copied into `dist/icons/`:
+
+| File | Size | Purpose |
+| --- | --- | --- |
+| `icon-192.png` | 192×192 | Manifest (Android home screen) |
+| `icon-512.png` | 512×512 | Manifest (Android splash + larger surfaces) |
+| `icon-512-maskable.png` | 512×512 | Android adaptive icon (with safe-zone padding) |
+| `apple-touch-icon.png` | 180×180 | iOS home screen icon |
+
+Easiest way to generate all four from a single source image: use [realfavicongenerator.net](https://realfavicongenerator.net/) — upload one square PNG (1024×1024 ideal), download the bundle, and drop the four files above into `public/icons/`. Free, no signup.
+
+If you skip this step the PWA still installs, but iOS will use a screenshot of the page as the home-screen icon (works, just ugly).
+
+### How users install it
+
+- **iOS Safari**: Share button → "Add to Home Screen". Tapping the new icon opens FastBreak full-screen, no browser chrome. Looks and feels like a native app.
+- **Android Chrome**: a banner appears at the bottom suggesting "Install Fastbreak", or via the ⋮ menu → "Install app".
+- **Desktop Chrome / Edge**: install icon appears in the address bar.
+
+The same standalone behavior happens automatically once the manifest is in place.
 
 ## Type-checking
 
