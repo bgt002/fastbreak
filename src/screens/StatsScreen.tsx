@@ -149,6 +149,7 @@ export function StatsScreen() {
         seasonType={seasonType}
         teams={teamsArray}
         onClose={() => setOpenStat(null)}
+        onSeasonTypeChange={setSeasonType}
       />
 
       <SeasonPickerModal

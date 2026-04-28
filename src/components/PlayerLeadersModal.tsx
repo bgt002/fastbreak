@@ -1,7 +1,6 @@
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useEffect, useMemo, useState } from "react";
 import {
-  FlatList,
   Modal,
   Platform,
   Pressable,
@@ -34,6 +33,9 @@ type Props = {
   seasonType: SeasonType;
   teams: NbaTeam[];
   onClose: () => void;
+  // Controlled by the parent so a switch made inside the modal persists back
+  // to the StatsScreen view after the user closes it.
+  onSeasonTypeChange: (seasonType: SeasonType) => void;
 };
 
 type ColumnId =
@@ -68,23 +70,26 @@ const oneDecimal = (n: number) => n.toFixed(1);
 const integer = (n: number) => String(Math.round(n));
 const percent = (n: number) => formatLeaderValue("fg_pct", n);
 
+// Column order: MIN, then PTS / REB / AST / STL / BLK / TOV (headline counting
+// stats), then shooting splits with attempts before makes (FGA, FGM, FG%, 3PA,
+// 3PM, 3P%, FTA, FTM, FT%), then double-doubles / triple-doubles.
 const COLUMNS: Column[] = [
   { id: "min", label: "MIN", width: 52, selector: (p) => p.minutes, format: (p) => oneDecimal(p.minutes) },
   { id: "pts", label: "PTS", width: 52, selector: (p) => p.stats.pts, format: (p) => oneDecimal(p.stats.pts) },
-  { id: "fgm", label: "FGM", width: 52, selector: (p) => p.stats.fgm, format: (p) => oneDecimal(p.stats.fgm) },
-  { id: "fga", label: "FGA", width: 52, selector: (p) => p.stats.fga, format: (p) => oneDecimal(p.stats.fga) },
-  { id: "fg_pct", label: "FG%", width: 56, selector: (p) => p.stats.fg_pct, format: (p) => percent(p.stats.fg_pct) },
-  { id: "fg3m", label: "3PM", width: 52, selector: (p) => p.stats.fg3m, format: (p) => oneDecimal(p.stats.fg3m) },
-  { id: "fg3a", label: "3PA", width: 52, selector: (p) => p.stats.fg3a, format: (p) => oneDecimal(p.stats.fg3a) },
-  { id: "fg3_pct", label: "3P%", width: 56, selector: (p) => p.stats.fg3_pct, format: (p) => percent(p.stats.fg3_pct) },
-  { id: "ftm", label: "FTM", width: 52, selector: (p) => p.stats.ftm, format: (p) => oneDecimal(p.stats.ftm) },
-  { id: "fta", label: "FTA", width: 52, selector: (p) => p.stats.fta, format: (p) => oneDecimal(p.stats.fta) },
-  { id: "ft_pct", label: "FT%", width: 56, selector: (p) => p.stats.ft_pct, format: (p) => percent(p.stats.ft_pct) },
   { id: "reb", label: "REB", width: 52, selector: (p) => p.stats.reb, format: (p) => oneDecimal(p.stats.reb) },
   { id: "ast", label: "AST", width: 52, selector: (p) => p.stats.ast, format: (p) => oneDecimal(p.stats.ast) },
   { id: "stl", label: "STL", width: 52, selector: (p) => p.stats.stl, format: (p) => oneDecimal(p.stats.stl) },
   { id: "blk", label: "BLK", width: 52, selector: (p) => p.stats.blk, format: (p) => oneDecimal(p.stats.blk) },
   { id: "tov", label: "TO", width: 48, selector: (p) => p.stats.tov, format: (p) => oneDecimal(p.stats.tov) },
+  { id: "fga", label: "FGA", width: 52, selector: (p) => p.stats.fga, format: (p) => oneDecimal(p.stats.fga) },
+  { id: "fgm", label: "FGM", width: 52, selector: (p) => p.stats.fgm, format: (p) => oneDecimal(p.stats.fgm) },
+  { id: "fg_pct", label: "FG%", width: 56, selector: (p) => p.stats.fg_pct, format: (p) => percent(p.stats.fg_pct) },
+  { id: "fg3a", label: "3PA", width: 52, selector: (p) => p.stats.fg3a, format: (p) => oneDecimal(p.stats.fg3a) },
+  { id: "fg3m", label: "3PM", width: 52, selector: (p) => p.stats.fg3m, format: (p) => oneDecimal(p.stats.fg3m) },
+  { id: "fg3_pct", label: "3P%", width: 56, selector: (p) => p.stats.fg3_pct, format: (p) => percent(p.stats.fg3_pct) },
+  { id: "fta", label: "FTA", width: 52, selector: (p) => p.stats.fta, format: (p) => oneDecimal(p.stats.fta) },
+  { id: "ftm", label: "FTM", width: 52, selector: (p) => p.stats.ftm, format: (p) => oneDecimal(p.stats.ftm) },
+  { id: "ft_pct", label: "FT%", width: 56, selector: (p) => p.stats.ft_pct, format: (p) => percent(p.stats.ft_pct) },
   { id: "dd2", label: "DD2", width: 48, selector: (p) => p.stats.dd2, format: (p) => integer(p.stats.dd2) },
   { id: "td3", label: "TD3", width: 48, selector: (p) => p.stats.td3, format: (p) => integer(p.stats.td3) }
 ];
@@ -116,7 +121,15 @@ function meetsStatQualification(p: NbaPlayerSeasonStats, statId: ColumnId): bool
 
 type SortDirection = "asc" | "desc";
 
-export function PlayerLeadersModal({ visible, initialStat, season, seasonType, teams, onClose }: Props) {
+export function PlayerLeadersModal({
+  visible,
+  initialStat,
+  season,
+  seasonType,
+  teams,
+  onClose,
+  onSeasonTypeChange
+}: Props) {
   const [sortKey, setSortKey] = useState<ColumnId>("pts");
   const [sortDir, setSortDir] = useState<SortDirection>("desc");
   const [teamId, setTeamId] = useState<number | "all">("all");
@@ -179,6 +192,31 @@ export function PlayerLeadersModal({ visible, initialStat, season, seasonType, t
           </Pressable>
         </View>
 
+        <View style={styles.seasonTypeRow}>
+          <View style={styles.seasonTypeSegment}>
+            {(["regular", "playoffs"] as const).map((item) => {
+              const active = seasonType === item;
+              return (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: active }}
+                  key={item}
+                  onPress={() => onSeasonTypeChange(item)}
+                  style={({ pressed }) => [
+                    styles.seasonTypeButton,
+                    active && styles.seasonTypeButtonActive,
+                    pressed && styles.pressed
+                  ]}
+                >
+                  <Text style={[styles.seasonTypeText, active && styles.seasonTypeTextActive]}>
+                    {item === "regular" ? "Regular" : "Playoffs"}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </View>
+
         <View style={styles.filtersRow}>
           <Pressable
             accessibilityRole="button"
@@ -208,50 +246,60 @@ export function PlayerLeadersModal({ visible, initialStat, season, seasonType, t
         {loading ? <LoadingState label="Loading players" /> : null}
         {error ? <ErrorState error={error} onRetry={reload} /> : null}
         {data && !loading ? (
-          <ScrollView horizontal contentContainerStyle={styles.tableScroll} showsHorizontalScrollIndicator>
-            <View style={styles.tableInner}>
-              <View style={[styles.tableRow, styles.tableHeader]}>
-                <Text style={[styles.headerCell, styles.rankCell]}>#</Text>
-                <Text style={[styles.headerCell, styles.playerCell]}>Player</Text>
-                <Text style={[styles.headerCell, styles.posCell]}>POS</Text>
-                <Text style={[styles.headerCell, styles.gpCell]}>GP</Text>
-                {COLUMNS.map((col) => {
-                  const active = sortKey === col.id;
-                  return (
-                    <Pressable
-                      key={col.id}
-                      hitSlop={6}
-                      onPress={() => handleSortHeader(col.id)}
-                      style={[styles.headerStatCell, { width: col.width }]}
-                    >
-                      <Text style={[styles.headerCell, active && styles.headerCellActive]}>{col.label}</Text>
-                      {active ? (
-                        <Ionicons
-                          color={colors.secondary}
-                          name={sortDir === "desc" ? "caret-down" : "caret-up"}
-                          size={10}
-                        />
-                      ) : null}
-                    </Pressable>
-                  );
-                })}
-              </View>
+          // Outer vertical scroll, inner horizontal scroll. Position: sticky
+          // on a cell pins to the inner (horizontal) scroll's left edge. We
+          // deliberately render rows inline (not via FlatList) — FlatList's
+          // virtualization wraps each row in its own positioned/translated
+          // container on web, which becomes the sticky element's containing
+          // block and breaks pinning to the horizontal scroll viewport. With
+          // ~500 player rows × ~20 cells, inline rendering is well within
+          // budget for a modal that mounts on demand.
+          <ScrollView showsVerticalScrollIndicator={false}>
+            <ScrollView horizontal contentContainerStyle={styles.tableScroll} showsHorizontalScrollIndicator>
+              <View style={styles.tableInner}>
+                <View style={[styles.tableRow, styles.tableHeader]}>
+                  <Text style={[styles.headerCell, styles.rankCell]}>#</Text>
+                  <Text style={[styles.headerCell, styles.playerCell, webStickyHeaderName]}>Player</Text>
+                  <Text style={[styles.headerCell, styles.posCell]}>POS</Text>
+                  <Text style={[styles.headerCell, styles.gpCell]}>GP</Text>
+                  {COLUMNS.map((col) => {
+                    const active = sortKey === col.id;
+                    return (
+                      <Pressable
+                        key={col.id}
+                        hitSlop={6}
+                        onPress={() => handleSortHeader(col.id)}
+                        style={[styles.headerStatCell, { width: col.width }]}
+                      >
+                        <Text style={[styles.headerCell, active && styles.headerCellActive]}>{col.label}</Text>
+                        {active ? (
+                          <Ionicons
+                            color={colors.secondary}
+                            name={sortDir === "desc" ? "caret-down" : "caret-up"}
+                            size={10}
+                          />
+                        ) : null}
+                      </Pressable>
+                    );
+                  })}
+                </View>
 
-              <FlatList
-                data={sortedFiltered}
-                keyExtractor={(item) => String(item.player.id)}
-                initialNumToRender={20}
-                windowSize={10}
-                renderItem={({ item, index }) => (
-                  <PlayerRow rank={index + 1} player={item} sortKey={sortKey} />
-                )}
-                ListEmptyComponent={
+                {sortedFiltered.length === 0 ? (
                   <View style={styles.empty}>
                     <Text style={styles.emptyText}>No players match the current filters.</Text>
                   </View>
-                }
-              />
-            </View>
+                ) : (
+                  sortedFiltered.map((item, index) => (
+                    <PlayerRow
+                      key={String(item.player.id)}
+                      rank={index + 1}
+                      player={item}
+                      sortKey={sortKey}
+                    />
+                  ))
+                )}
+              </View>
+            </ScrollView>
           </ScrollView>
         ) : null}
       </View>
@@ -274,7 +322,7 @@ function PlayerRow({ rank, player, sortKey }: { rank: number; player: NbaPlayerS
   return (
     <View style={[styles.tableRow, styles.bodyRow]}>
       <Text style={[styles.bodyCell, styles.rankCell]}>{rank}</Text>
-      <View style={[styles.playerCell, styles.playerCellInner]}>
+      <View style={[styles.playerCell, styles.playerCellInner, webStickyBodyName]}>
         <PlayerAvatar player={player.player} size={32} />
         <View style={styles.playerCopy}>
           <Text numberOfLines={1} style={styles.playerName}>{playerName(player.player)}</Text>
@@ -351,6 +399,24 @@ const webHeaderSafeArea = (Platform.OS === "web"
   ? { paddingTop: "calc(env(safe-area-inset-top) + 16px)" }
   : null) as ViewStyle | null;
 
+// On web, pin the player-name cell to the left edge of the horizontally
+// scrolling table so the user always sees which player a row belongs to
+// while paging through stat columns. Rank/POS/GP scroll past normally —
+// only the name freezes. The cell's explicit `width: 220` is what makes
+// `position: sticky` reliable here; sticky on auto-width flex items is
+// brittle. zIndex keeps the pinned cell above stat columns scrolling behind.
+//
+// We use distinct opaque backgrounds for header (matching the row's tinted
+// look) and body (matching the modal's main bg) so the cells underneath are
+// fully obscured.
+const webStickyHeaderName = (Platform.OS === "web"
+  ? { position: "sticky", left: 0, backgroundColor: "rgb(11, 23, 41)", zIndex: 1 }
+  : null) as ViewStyle | null;
+
+const webStickyBodyName = (Platform.OS === "web"
+  ? { position: "sticky", left: 0, backgroundColor: colors.background, zIndex: 1 }
+  : null) as ViewStyle | null;
+
 const styles = StyleSheet.create({
   container: {
     backgroundColor: colors.background,
@@ -378,6 +444,40 @@ const styles = StyleSheet.create({
     height: 36,
     justifyContent: "center",
     width: 36
+  },
+  seasonTypeRow: {
+    flexDirection: "row",
+    paddingHorizontal: spacing.gutter,
+    paddingTop: spacing.md
+  },
+  seasonTypeSegment: {
+    backgroundColor: colors.surfaceContainer,
+    borderColor: "rgba(255,255,255,0.06)",
+    borderRadius: radii.md,
+    borderWidth: 1,
+    flexDirection: "row",
+    gap: 4,
+    padding: 4
+  },
+  seasonTypeButton: {
+    borderRadius: 6,
+    minWidth: 84,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 6
+  },
+  seasonTypeButtonActive: {
+    backgroundColor: colors.secondary
+  },
+  seasonTypeText: {
+    color: "#A5ACB8",
+    fontFamily: fonts.heading,
+    fontSize: 12,
+    lineHeight: 15,
+    textAlign: "center",
+    textTransform: "capitalize"
+  },
+  seasonTypeTextActive: {
+    color: colors.white
   },
   filtersRow: {
     flexDirection: "row",

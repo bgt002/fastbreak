@@ -94,26 +94,30 @@ function computeTotals(players: NbaBoxScorePlayer[]): TeamTotals {
   );
 }
 
+// Column order: MIN, then PTS / REB / AST / STL / BLK / TOV (headline counting
+// stats), then PF, then shooting splits with attempts before makes (FGA, FGM,
+// FG%, 3PA, 3PM, 3P%, FTA, FTM, FT%), then offensive/defensive boards, then
+// +/-.
 const statColumns: StatColumn[] = [
   { label: "MIN", width: 44, player: playerMinutes, total: () => "" },
   { label: "PTS", width: 36, player: (p) => String(p.points), total: (t) => String(t.points) },
-  { label: "FGM", width: 36, player: (p) => String(p.fgm), total: (t) => String(t.fgm) },
-  { label: "FGA", width: 36, player: (p) => String(p.fga), total: (t) => String(t.fga) },
-  { label: "FG%", width: 48, player: (p) => pct(p.fgm, p.fga), total: (t) => pct(t.fgm, t.fga) },
-  { label: "3PM", width: 36, player: (p) => String(p.fg3m), total: (t) => String(t.fg3m) },
-  { label: "3PA", width: 36, player: (p) => String(p.fg3a), total: (t) => String(t.fg3a) },
-  { label: "3P%", width: 48, player: (p) => pct(p.fg3m, p.fg3a), total: (t) => pct(t.fg3m, t.fg3a) },
-  { label: "FTM", width: 36, player: (p) => String(p.ftm), total: (t) => String(t.ftm) },
-  { label: "FTA", width: 36, player: (p) => String(p.fta), total: (t) => String(t.fta) },
-  { label: "FT%", width: 48, player: (p) => pct(p.ftm, p.fta), total: (t) => pct(t.ftm, t.fta) },
-  { label: "OREB", width: 44, player: (p) => String(p.oreb), total: (t) => String(t.oreb) },
-  { label: "DREB", width: 44, player: (p) => String(p.dreb), total: (t) => String(t.dreb) },
   { label: "REB", width: 36, player: (p) => String(p.rebounds), total: (t) => String(t.rebounds) },
   { label: "AST", width: 36, player: (p) => String(p.assists), total: (t) => String(t.assists) },
   { label: "STL", width: 36, player: (p) => String(p.steals), total: (t) => String(t.steals) },
   { label: "BLK", width: 36, player: (p) => String(p.blocks), total: (t) => String(t.blocks) },
   { label: "TOV", width: 36, player: (p) => String(p.turnovers), total: (t) => String(t.turnovers) },
   { label: "PF", width: 32, player: (p) => String(p.fouls), total: (t) => String(t.fouls) },
+  { label: "FGA", width: 36, player: (p) => String(p.fga), total: (t) => String(t.fga) },
+  { label: "FGM", width: 36, player: (p) => String(p.fgm), total: (t) => String(t.fgm) },
+  { label: "FG%", width: 48, player: (p) => pct(p.fgm, p.fga), total: (t) => pct(t.fgm, t.fga) },
+  { label: "3PA", width: 36, player: (p) => String(p.fg3a), total: (t) => String(t.fg3a) },
+  { label: "3PM", width: 36, player: (p) => String(p.fg3m), total: (t) => String(t.fg3m) },
+  { label: "3P%", width: 48, player: (p) => pct(p.fg3m, p.fg3a), total: (t) => pct(t.fg3m, t.fg3a) },
+  { label: "FTA", width: 36, player: (p) => String(p.fta), total: (t) => String(t.fta) },
+  { label: "FTM", width: 36, player: (p) => String(p.ftm), total: (t) => String(t.ftm) },
+  { label: "FT%", width: 48, player: (p) => pct(p.ftm, p.fta), total: (t) => pct(t.ftm, t.fta) },
+  { label: "OREB", width: 44, player: (p) => String(p.oreb), total: (t) => String(t.oreb) },
+  { label: "DREB", width: 44, player: (p) => String(p.dreb), total: (t) => String(t.dreb) },
   { label: "+/-", width: 40, player: (p) => formatPlusMinus(p.plus_minus), total: () => "" }
 ];
 
@@ -131,6 +135,18 @@ const webHeaderSafeArea = (Platform.OS === "web"
 
 const webHeaderButtonSafeArea = (Platform.OS === "web"
   ? { top: "calc(env(safe-area-inset-top) + 16px)" }
+  : null) as ViewStyle | null;
+
+// On web, pin the player-name column to the left edge of the horizontally
+// scrolling stat table so the user keeps track of which player each row
+// belongs to as the stats scroll. Body rows match the modal background;
+// totals row has its own tinted bg so we use a slightly different shade.
+const webStickyPlayerCell = (Platform.OS === "web"
+  ? { position: "sticky", left: 0, backgroundColor: colors.background, zIndex: 1 }
+  : null) as ViewStyle | null;
+
+const webStickyPlayerCellTotals = (Platform.OS === "web"
+  ? { position: "sticky", left: 0, backgroundColor: "rgb(13, 26, 47)", zIndex: 1 }
   : null) as ViewStyle | null;
 
 export function BoxScoreModal({ game, onClose }: Props) {
@@ -386,7 +402,7 @@ function TableStickyHeader({ scrollRef }: { scrollRef: React.RefObject<ScrollVie
     >
       <View style={[styles.table, styles.tableHeaderRow]}>
         <View style={[styles.tableRow, styles.tableHeader]}>
-          <Text style={[styles.headerCell, styles.playerCell]}>Player</Text>
+          <Text style={[styles.headerCell, styles.playerCell, webStickyPlayerCell]}>Player</Text>
           {statColumns.map((column) => (
             <Text key={column.label} style={[styles.headerCell, { width: column.width }]}>
               {column.label}
@@ -461,7 +477,7 @@ const PlayerRow = memo(function PlayerRow({
   const onCourt = showOnCourt && player.on_court;
   return (
     <View style={[styles.tableRow, styles.bodyRow]}>
-      <View style={[styles.playerCell, styles.playerCellInner]}>
+      <View style={[styles.playerCell, styles.playerCellInner, webStickyPlayerCell]}>
         {onCourt ? <View style={styles.onCourtDot} /> : <View style={styles.onCourtSpacer} />}
         <Text numberOfLines={1} style={styles.playerName}>
           {player.name}
@@ -479,7 +495,7 @@ const PlayerRow = memo(function PlayerRow({
 function TotalsRow({ totals }: { totals: TeamTotals }) {
   return (
     <View style={[styles.tableRow, styles.totalsRow]}>
-      <View style={styles.playerCell}>
+      <View style={[styles.playerCell, webStickyPlayerCellTotals]}>
         <Text style={styles.totalsLabel}>Team Totals</Text>
       </View>
       {statColumns.map((column) => (
