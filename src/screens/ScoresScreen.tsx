@@ -156,8 +156,28 @@ export function ScoresScreen() {
     }
   }, [today, pageWidth]);
 
-  // When user picks a date from the calendar (or anywhere else not via tap),
-  // page the week list to the week that contains it.
+  // FlatList's `initialScrollIndex` prop is unreliable on react-native-web
+  // and some Android setups — the list sometimes lands at index 0 instead of
+  // TODAY_WEEK_INDEX. This one-shot effect forces the strip onto the correct
+  // week the moment `pageWidth` becomes non-zero (i.e., as soon as the list
+  // is actually rendered for the first time).
+  const hasForcedInitialScroll = useRef(false);
+  useEffect(() => {
+    if (hasForcedInitialScroll.current || pageWidth <= 0) return;
+    const startIso = formatIsoDate(startOfWeek(selectedDate));
+    const idx = weeks.findIndex((w) => w.id === startIso);
+    if (idx < 0) return;
+    hasForcedInitialScroll.current = true;
+    setVisibleWeekIndex(idx);
+    // requestAnimationFrame waits one frame so the FlatList has actually
+    // mounted before we tell it to scroll, otherwise the call is a no-op.
+    requestAnimationFrame(() => {
+      weekListRef.current?.scrollToIndex({ index: idx, animated: false });
+    });
+  }, [pageWidth, weeks, selectedDate]);
+
+  // When the user picks a date from the calendar (or anywhere else not via
+  // tap), page the week list to the week that contains it.
   useEffect(() => {
     const startIso = formatIsoDate(startOfWeek(selectedDate));
     const idx = weeks.findIndex((w) => w.id === startIso);

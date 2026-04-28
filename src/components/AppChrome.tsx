@@ -1,6 +1,16 @@
 import Ionicons from "@expo/vector-icons/Ionicons";
 import type { PropsWithChildren } from "react";
-import { Platform, Pressable, SafeAreaView, StatusBar as NativeStatusBar, StyleSheet, Text, View } from "react-native";
+import {
+  Platform,
+  Pressable,
+  SafeAreaView,
+  StatusBar as NativeStatusBar,
+  StyleSheet,
+  Text,
+  View,
+  type StyleProp,
+  type ViewStyle
+} from "react-native";
 
 import { navItems, type NavItem, type TabId } from "../navigation";
 import { colors, fonts, spacing } from "../theme";
@@ -11,13 +21,31 @@ type AppChromeProps = PropsWithChildren<{
   items?: NavItem[];
 }>;
 
+// On iOS PWA standalone, the page extends under the status bar / home
+// indicator (because of viewport-fit=cover). RN's SafeAreaView is a no-op on
+// web, so we apply CSS env() insets ourselves. On native iOS the SafeAreaView
+// already handles it; on Android we use the StatusBar height.
+const screenWebStyle =
+  Platform.OS === "web"
+    ? ({ paddingTop: "env(safe-area-inset-top, 0px)" } as unknown as ViewStyle)
+    : null;
+const bottomNavWebStyle =
+  Platform.OS === "web"
+    ? ({ paddingBottom: "env(safe-area-inset-bottom, 0px)" } as unknown as ViewStyle)
+    : null;
+
 export function AppChrome({ activeTab, children, onTabChange, items = navItems }: AppChromeProps) {
   return (
     <SafeAreaView style={styles.safeArea}>
-      <View style={styles.screen}>
+      <View style={[styles.screen, screenWebStyle]}>
         <TopBar />
         <View style={styles.content}>{children}</View>
-        <BottomNav activeId={activeTab} items={items} onTabChange={onTabChange} />
+        <BottomNav
+          activeId={activeTab}
+          items={items}
+          onTabChange={onTabChange}
+          extraStyle={bottomNavWebStyle}
+        />
       </View>
     </SafeAreaView>
   );
@@ -39,14 +67,16 @@ function TopBar() {
 function BottomNav({
   activeId,
   items,
-  onTabChange
+  onTabChange,
+  extraStyle
 }: {
   activeId: TabId;
   items: NavItem[];
   onTabChange: (tab: TabId) => void;
+  extraStyle?: StyleProp<ViewStyle>;
 }) {
   return (
-    <View style={styles.bottomNav}>
+    <View style={[styles.bottomNav, extraStyle]}>
       <View style={styles.bottomNavInner}>
         {items.map((item) => {
           const active = item.id === activeId;

@@ -110,12 +110,15 @@ const tableWidth = 180 + statColumns.reduce((total, column) => total + column.wi
 export function BoxScoreModal({ game, onClose }: Props) {
   return (
     <Modal animationType="slide" onRequestClose={onClose} presentationStyle="pageSheet" visible={game !== null}>
-      {game ? <BoxScoreContent key={game.id} game={game} /> : null}
+      {game ? <BoxScoreContent key={game.id} game={game} onClose={onClose} /> : null}
     </Modal>
   );
 }
 
-export function BoxScoreContent({ game }: { game: NbaGame }) {
+// `onClose` is optional because the desktop multi-pane usage renders this
+// inline (with no close concept — the user just clicks a different game).
+// When provided (i.e., from the modal), we render an X in the top-right.
+export function BoxScoreContent({ game, onClose }: { game: NbaGame; onClose?: () => void }) {
   const state = getGameState(game);
   const isUpcoming = state === "upcoming";
   const isLive = state === "live";
@@ -198,12 +201,22 @@ export function BoxScoreContent({ game }: { game: NbaGame }) {
           disabled={refreshing}
           hitSlop={12}
           onPress={handleRefresh}
-          style={({ pressed }) => [styles.refreshButton, pressed && styles.refreshButtonPressed]}
+          style={({ pressed }) => [styles.headerButton, styles.headerButtonLeft, pressed && styles.headerButtonPressed]}
         >
           <Animated.View style={{ transform: [{ rotate: spinDeg }] }}>
             <Ionicons color={colors.white} name="refresh-outline" size={20} />
           </Animated.View>
         </Pressable>
+        {onClose ? (
+          <Pressable
+            accessibilityLabel="Close box score"
+            hitSlop={12}
+            onPress={onClose}
+            style={({ pressed }) => [styles.headerButton, styles.headerButtonRight, pressed && styles.headerButtonPressed]}
+          >
+            <Ionicons color={colors.white} name="close" size={22} />
+          </Pressable>
+        ) : null}
       </View>
 
       {isUpcoming ? (
@@ -466,18 +479,23 @@ const styles = StyleSheet.create({
   headerStatusLive: {
     color: colors.tertiary
   },
-  refreshButton: {
+  headerButton: {
     alignItems: "center",
     backgroundColor: "rgba(255,255,255,0.08)",
     borderRadius: 18,
     height: 36,
     justifyContent: "center",
     position: "absolute",
-    right: spacing.gutter,
     top: spacing.md,
     width: 36
   },
-  refreshButtonPressed: {
+  headerButtonLeft: {
+    left: spacing.gutter
+  },
+  headerButtonRight: {
+    right: spacing.gutter
+  },
+  headerButtonPressed: {
     opacity: 0.6
   },
   headerTeams: {
