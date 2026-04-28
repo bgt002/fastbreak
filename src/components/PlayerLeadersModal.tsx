@@ -15,35 +15,100 @@ import { colors, fonts, radii, spacing } from "../theme";
 import { ErrorState, LoadingState } from "./DataState";
 import { PlayerAvatar } from "./PlayerAvatar";
 
+type SeasonType = "regular" | "playoffs";
+
 type Props = {
   visible: boolean;
   initialStat: StatType | null;
   season: number;
+  seasonType: SeasonType;
   teams: NbaTeam[];
   onClose: () => void;
 };
 
+type ColumnId =
+  | "min"
+  | "pts"
+  | "fgm"
+  | "fga"
+  | "fg_pct"
+  | "fg3m"
+  | "fg3a"
+  | "fg3_pct"
+  | "ftm"
+  | "fta"
+  | "ft_pct"
+  | "reb"
+  | "ast"
+  | "stl"
+  | "blk"
+  | "tov"
+  | "dd2"
+  | "td3";
+
 type Column = {
-  id: StatType;
+  id: ColumnId;
   label: string;
+  width: number;
   selector: (p: NbaPlayerSeasonStats) => number;
   format: (p: NbaPlayerSeasonStats) => string;
 };
 
+const oneDecimal = (n: number) => n.toFixed(1);
+const integer = (n: number) => String(Math.round(n));
+const percent = (n: number) => formatLeaderValue("fg_pct", n);
+
 const COLUMNS: Column[] = [
-  { id: "pts", label: "PTS", selector: (p) => p.stats.pts, format: (p) => p.stats.pts.toFixed(1) },
-  { id: "reb", label: "REB", selector: (p) => p.stats.reb, format: (p) => p.stats.reb.toFixed(1) },
-  { id: "ast", label: "AST", selector: (p) => p.stats.ast, format: (p) => p.stats.ast.toFixed(1) },
-  { id: "stl", label: "STL", selector: (p) => p.stats.stl, format: (p) => p.stats.stl.toFixed(1) },
-  { id: "blk", label: "BLK", selector: (p) => p.stats.blk, format: (p) => p.stats.blk.toFixed(1) },
-  { id: "fg_pct", label: "FG%", selector: (p) => p.stats.fg_pct, format: (p) => formatLeaderValue("fg_pct", p.stats.fg_pct) }
+  { id: "min", label: "MIN", width: 52, selector: (p) => p.minutes, format: (p) => oneDecimal(p.minutes) },
+  { id: "pts", label: "PTS", width: 52, selector: (p) => p.stats.pts, format: (p) => oneDecimal(p.stats.pts) },
+  { id: "fgm", label: "FGM", width: 52, selector: (p) => p.stats.fgm, format: (p) => oneDecimal(p.stats.fgm) },
+  { id: "fga", label: "FGA", width: 52, selector: (p) => p.stats.fga, format: (p) => oneDecimal(p.stats.fga) },
+  { id: "fg_pct", label: "FG%", width: 56, selector: (p) => p.stats.fg_pct, format: (p) => percent(p.stats.fg_pct) },
+  { id: "fg3m", label: "3PM", width: 52, selector: (p) => p.stats.fg3m, format: (p) => oneDecimal(p.stats.fg3m) },
+  { id: "fg3a", label: "3PA", width: 52, selector: (p) => p.stats.fg3a, format: (p) => oneDecimal(p.stats.fg3a) },
+  { id: "fg3_pct", label: "3P%", width: 56, selector: (p) => p.stats.fg3_pct, format: (p) => percent(p.stats.fg3_pct) },
+  { id: "ftm", label: "FTM", width: 52, selector: (p) => p.stats.ftm, format: (p) => oneDecimal(p.stats.ftm) },
+  { id: "fta", label: "FTA", width: 52, selector: (p) => p.stats.fta, format: (p) => oneDecimal(p.stats.fta) },
+  { id: "ft_pct", label: "FT%", width: 56, selector: (p) => p.stats.ft_pct, format: (p) => percent(p.stats.ft_pct) },
+  { id: "reb", label: "REB", width: 52, selector: (p) => p.stats.reb, format: (p) => oneDecimal(p.stats.reb) },
+  { id: "ast", label: "AST", width: 52, selector: (p) => p.stats.ast, format: (p) => oneDecimal(p.stats.ast) },
+  { id: "stl", label: "STL", width: 52, selector: (p) => p.stats.stl, format: (p) => oneDecimal(p.stats.stl) },
+  { id: "blk", label: "BLK", width: 52, selector: (p) => p.stats.blk, format: (p) => oneDecimal(p.stats.blk) },
+  { id: "tov", label: "TO", width: 48, selector: (p) => p.stats.tov, format: (p) => oneDecimal(p.stats.tov) },
+  { id: "dd2", label: "DD2", width: 48, selector: (p) => p.stats.dd2, format: (p) => integer(p.stats.dd2) },
+  { id: "td3", label: "TD3", width: 48, selector: (p) => p.stats.td3, format: (p) => integer(p.stats.td3) }
 ];
 
 const POSITION_FILTERS = ["All", "G", "F", "C"] as const;
 type PositionFilter = (typeof POSITION_FILTERS)[number];
 
-export function PlayerLeadersModal({ visible, initialStat, season, teams, onClose }: Props) {
-  const [sortKey, setSortKey] = useState<StatType>("pts");
+// NBA's percentage-stat qualification rules expressed as per-game make rates
+// (300 FGM / 82 G, 82 3PM / 82 G, 125 FTM / 82 G). When the user sorts the
+// table by one of these, players below the rate are hidden so a low-volume
+// shooter at 100% can't appear ahead of legitimate league leaders.
+const PCT_QUALIFICATION_RATES: Partial<Record<ColumnId, (p: NbaPlayerSeasonStats) => number>> = {
+  fg_pct: (p) => p.stats.fgm,
+  fg3_pct: (p) => p.stats.fg3m,
+  ft_pct: (p) => p.stats.ftm
+};
+const PCT_QUALIFICATION_THRESHOLDS: Partial<Record<ColumnId, number>> = {
+  fg_pct: 300 / 82,
+  fg3_pct: 82 / 82,
+  ft_pct: 125 / 82
+};
+
+function meetsStatQualification(p: NbaPlayerSeasonStats, statId: ColumnId): boolean {
+  const rate = PCT_QUALIFICATION_RATES[statId];
+  const threshold = PCT_QUALIFICATION_THRESHOLDS[statId];
+  if (!rate || threshold === undefined) return true;
+  return rate(p) >= threshold;
+}
+
+type SortDirection = "asc" | "desc";
+
+export function PlayerLeadersModal({ visible, initialStat, season, seasonType, teams, onClose }: Props) {
+  const [sortKey, setSortKey] = useState<ColumnId>("pts");
+  const [sortDir, setSortDir] = useState<SortDirection>("desc");
   const [teamId, setTeamId] = useState<number | "all">("all");
   const [position, setPosition] = useState<PositionFilter>("All");
   const [teamPickerOpen, setTeamPickerOpen] = useState(false);
@@ -51,14 +116,26 @@ export function PlayerLeadersModal({ visible, initialStat, season, teams, onClos
   useEffect(() => {
     if (visible && initialStat) setSortKey(initialStat);
     if (visible) {
+      setSortDir("desc");
       setTeamId("all");
       setPosition("All");
     }
   }, [visible, initialStat]);
 
+  // Click a header: same column toggles direction; different column resets
+  // to descending (which is what you almost always want for stat leaders).
+  const handleSortHeader = (id: ColumnId) => {
+    if (id === sortKey) {
+      setSortDir((d) => (d === "desc" ? "asc" : "desc"));
+    } else {
+      setSortKey(id);
+      setSortDir("desc");
+    }
+  };
+
   const { data, error, loading, reload } = useAsyncData(
-    () => (visible ? getPlayerSeasonStats(season) : Promise.resolve([])),
-    [visible, season]
+    () => (visible ? getPlayerSeasonStats(season, seasonType) : Promise.resolve([])),
+    [visible, season, seasonType]
   );
 
   const sortedFiltered = useMemo(() => {
@@ -69,11 +146,15 @@ export function PlayerLeadersModal({ visible, initialStat, season, teams, onClos
         const pos = (p.player.position ?? "").toUpperCase();
         if (!pos.split("-").includes(position)) return false;
       }
+      if (!meetsStatQualification(p, sortKey)) return false;
       return true;
     });
     const column = COLUMNS.find((c) => c.id === sortKey) ?? COLUMNS[0]!;
-    return [...filtered].sort((a, b) => column.selector(b) - column.selector(a));
-  }, [data, sortKey, teamId, position]);
+    return [...filtered].sort((a, b) => {
+      const diff = column.selector(b) - column.selector(a);
+      return sortDir === "desc" ? diff : -diff;
+    });
+  }, [data, sortKey, sortDir, teamId, position]);
 
   const selectedTeam = teamId === "all" ? null : teams.find((t) => t.id === teamId) ?? null;
   const sortedTeams = useMemo(() => [...teams].sort((a, b) => a.full_name.localeCompare(b.full_name)), [teams]);
@@ -117,8 +198,8 @@ export function PlayerLeadersModal({ visible, initialStat, season, teams, onClos
         {loading ? <LoadingState label="Loading players" /> : null}
         {error ? <ErrorState error={error} onRetry={reload} /> : null}
         {data && !loading ? (
-          <ScrollView horizontal showsHorizontalScrollIndicator>
-            <View>
+          <ScrollView horizontal contentContainerStyle={styles.tableScroll} showsHorizontalScrollIndicator>
+            <View style={styles.tableInner}>
               <View style={[styles.tableRow, styles.tableHeader]}>
                 <Text style={[styles.headerCell, styles.rankCell]}>#</Text>
                 <Text style={[styles.headerCell, styles.playerCell]}>Player</Text>
@@ -130,11 +211,17 @@ export function PlayerLeadersModal({ visible, initialStat, season, teams, onClos
                     <Pressable
                       key={col.id}
                       hitSlop={6}
-                      onPress={() => setSortKey(col.id)}
-                      style={[styles.headerStatCell, styles.statCell]}
+                      onPress={() => handleSortHeader(col.id)}
+                      style={[styles.headerStatCell, { width: col.width }]}
                     >
                       <Text style={[styles.headerCell, active && styles.headerCellActive]}>{col.label}</Text>
-                      {active ? <Ionicons color={colors.secondary} name="caret-down" size={10} /> : null}
+                      {active ? (
+                        <Ionicons
+                          color={colors.secondary}
+                          name={sortDir === "desc" ? "caret-down" : "caret-up"}
+                          size={10}
+                        />
+                      ) : null}
                     </Pressable>
                   );
                 })}
@@ -173,7 +260,7 @@ export function PlayerLeadersModal({ visible, initialStat, season, teams, onClos
   );
 }
 
-function PlayerRow({ rank, player, sortKey }: { rank: number; player: NbaPlayerSeasonStats; sortKey: StatType }) {
+function PlayerRow({ rank, player, sortKey }: { rank: number; player: NbaPlayerSeasonStats; sortKey: ColumnId }) {
   return (
     <View style={[styles.tableRow, styles.bodyRow]}>
       <Text style={[styles.bodyCell, styles.rankCell]}>{rank}</Text>
@@ -191,7 +278,7 @@ function PlayerRow({ rank, player, sortKey }: { rank: number; player: NbaPlayerS
       {COLUMNS.map((col) => (
         <Text
           key={col.id}
-          style={[styles.bodyCell, styles.statCell, sortKey === col.id && styles.bodyCellActive]}
+          style={[styles.bodyCell, { width: col.width }, sortKey === col.id && styles.bodyCellActive]}
         >
           {col.format(player)}
         </Text>
@@ -297,9 +384,7 @@ const styles = StyleSheet.create({
   },
   positionRow: {
     flexDirection: "row",
-    flex: 1,
-    gap: 6,
-    justifyContent: "flex-end"
+    gap: 6
   },
   positionPill: {
     backgroundColor: colors.surfaceContainer,
@@ -372,7 +457,18 @@ const styles = StyleSheet.create({
   },
   playerCell: {
     paddingHorizontal: 8,
-    width: 200
+    width: 220
+  },
+  // Table sits at its natural content width and centers within the modal so
+  // wide screens get symmetric breathing room on both sides instead of empty
+  // space all on the right.
+  tableScroll: {
+    flexGrow: 1,
+    justifyContent: "center",
+    paddingHorizontal: spacing.lg
+  },
+  tableInner: {
+    // Natural width — sum of fixed-width cells.
   },
   playerCellInner: {
     alignItems: "center",

@@ -24,7 +24,12 @@ const standingsColumns = [
   { key: "home", label: "Home", width: 72 },
   { key: "away", label: "Away", width: 72 },
   { key: "conf", label: "Conf", width: 72 },
-  { key: "div", label: "Div", width: 64 }
+  { key: "div", label: "Div", width: 64 },
+  { key: "ppg", label: "PPG", width: 64 },
+  { key: "oppPpg", label: "Opp PPG", width: 76 },
+  { key: "diff", label: "Diff", width: 64 },
+  { key: "strk", label: "Strk", width: 60 },
+  { key: "l10", label: "L10", width: 60 }
 ] as const;
 
 type ColumnKey = (typeof standingsColumns)[number]["key"];
@@ -132,15 +137,24 @@ export function StandingsScreen() {
 
 function StandingTableRow({ leader, row }: { leader?: NbaStanding; row: NbaStanding }) {
   const highlighted = row.conference_rank === 1;
-  const values: Record<ColumnKey, string | number> = {
-    w: row.wins,
-    l: row.losses,
+  const diff = row.diff_points_pg ?? 0;
+  const streak = row.streak ?? "";
+  const streakIsWin = streak.startsWith("W");
+  const streakIsLoss = streak.startsWith("L");
+  const values: Record<ColumnKey, string> = {
+    w: String(row.wins),
+    l: String(row.losses),
     pct: calculatePct(row.wins, row.losses),
     gb: calculateGamesBack(row, leader),
     home: row.home_record,
     away: row.road_record,
     conf: row.conference_record,
-    div: row.division_record
+    div: row.division_record,
+    ppg: row.points_pg !== undefined ? row.points_pg.toFixed(1) : "—",
+    oppPpg: row.opp_points_pg !== undefined ? row.opp_points_pg.toFixed(1) : "—",
+    diff: row.diff_points_pg !== undefined ? `${diff > 0 ? "+" : ""}${diff.toFixed(1)}` : "—",
+    strk: streak.replace(/\s+/g, "") || "—",
+    l10: row.last_ten || "—"
   };
 
   return (
@@ -157,11 +171,21 @@ function StandingTableRow({ leader, row }: { leader?: NbaStanding; row: NbaStand
           </Text>
         </View>
       </View>
-      {standingsColumns.map((column) => (
-        <View key={column.key} style={[styles.metricCell, { width: column.width }]}>
-          <Text style={styles.bodyCell}>{values[column.key]}</Text>
-        </View>
-      ))}
+      {standingsColumns.map((column) => {
+        const value = values[column.key];
+        const cellStyle = [styles.bodyCell] as Array<object>;
+        if (column.key === "diff" && row.diff_points_pg !== undefined) {
+          cellStyle.push(diff > 0 ? styles.diffPositive : diff < 0 ? styles.diffNegative : styles.bodyCell);
+        } else if (column.key === "strk") {
+          if (streakIsWin) cellStyle.push(styles.diffPositive);
+          else if (streakIsLoss) cellStyle.push(styles.diffNegative);
+        }
+        return (
+          <View key={column.key} style={[styles.metricCell, { width: column.width }]}>
+            <Text style={cellStyle}>{value}</Text>
+          </View>
+        );
+      })}
     </View>
   );
 }
@@ -283,6 +307,12 @@ const styles = StyleSheet.create({
   },
   rankHighlighted: {
     color: colors.secondary
+  },
+  diffPositive: {
+    color: colors.win
+  },
+  diffNegative: {
+    color: colors.loss
   },
   teamCell: {
     alignItems: "center",

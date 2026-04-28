@@ -1,5 +1,6 @@
-import { useMemo, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import Ionicons from "@expo/vector-icons/Ionicons";
+import { useCallback, useMemo, useState } from "react";
+import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { EmptyState, ErrorState, LoadingState } from "../components/DataState";
 import { PlayerAvatar } from "../components/PlayerAvatar";
@@ -18,6 +19,8 @@ import {
 } from "../services/nbaApi";
 import { colors, fonts, radii, spacing } from "../theme";
 
+type SeasonType = "regular" | "playoffs";
+
 type StatCategory = {
   id: StatType;
   title: string;
@@ -26,127 +29,197 @@ type StatCategory = {
 
 type StatsData = {
   categories: StatCategory[];
-  compact: StatCategory[];
   teamMap: Map<number, NbaTeam>;
 };
 
-const season = getCurrentNbaSeason();
-const primaryStats: Array<Omit<StatCategory, "leaders">> = [
+// Eight categories rendered in a 2-column grid — clicking any opens the full
+// modal sorted by that stat. Mix of per-game and percentage leaders to give a
+// fuller picture of who's leading the league.
+const leaderCategories: Array<Omit<StatCategory, "leaders">> = [
   { id: "pts", title: "Points per Game" },
   { id: "reb", title: "Rebounds per Game" },
-  { id: "ast", title: "Assists per Game" }
+  { id: "ast", title: "Assists per Game" },
+  { id: "stl", title: "Steals per Game" },
+  { id: "blk", title: "Blocks per Game" },
+  { id: "fg3m", title: "3PT Made per Game" },
+  { id: "fg_pct", title: "Field Goal %" },
+  { id: "ft_pct", title: "Free Throw %" }
 ];
 
-const compactStats: Array<Omit<StatCategory, "leaders">> = [
-  { id: "stl", title: "Steals Leader" },
-  { id: "blk", title: "Blocks Leader" },
-  { id: "fg_pct", title: "FG% Leader" }
-];
+const TOP_N_PER_CARD = 5;
+
+const SEASON_HISTORY_LENGTH = 15;
 
 export function StatsScreen() {
-  const { data, error, loading, reload } = useAsyncData(loadStatsData, []);
+  const currentSeason = useMemo(() => getCurrentNbaSeason(), []);
+  const [season, setSeason] = useState(currentSeason);
+  const [seasonType, setSeasonType] = useState<SeasonType>("regular");
   const [openStat, setOpenStat] = useState<StatType | null>(null);
+  const [seasonPickerOpen, setSeasonPickerOpen] = useState(false);
+
+  const loader = useCallback(() => loadStatsData(season, seasonType), [season, seasonType]);
+  const { data, error, loading, reload } = useAsyncData(loader, [season, seasonType]);
   const teamsArray = useMemo(() => Array.from(data?.teamMap.values() ?? []), [data]);
+
+  const seasonOptions = useMemo(
+    () => Array.from({ length: SEASON_HISTORY_LENGTH }, (_, i) => currentSeason - i),
+    [currentSeason]
+  );
 
   return (
     <ScrollView bounces={false} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
       <View style={styles.contentShell}>
         <View style={styles.hero}>
           <Text style={styles.heroTitle}>Season Leaders</Text>
-          <Text style={styles.heroSubtitle}>{formatSeasonLabel(season)} / Regular Season</Text>
+          <Text style={styles.heroSubtitle}>
+            {formatSeasonLabel(season)} / {seasonType === "regular" ? "Regular Season" : "Playoffs"}
+          </Text>
+        </View>
+
+        <View style={styles.controlsRow}>
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => setSeasonPickerOpen(true)}
+            style={({ pressed }) => [styles.seasonButton, pressed && styles.pressed]}
+          >
+            <Text style={styles.seasonButtonLabel}>Season</Text>
+            <Text style={styles.seasonButtonValue}>{formatSeasonLabel(season)}</Text>
+            <Ionicons color="#A5ACB8" name="chevron-down" size={14} />
+          </Pressable>
+          <View style={styles.segmentedControl}>
+            {(["regular", "playoffs"] as const).map((item) => {
+              const active = seasonType === item;
+              return (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: active }}
+                  key={item}
+                  onPress={() => setSeasonType(item)}
+                  style={({ pressed }) => [
+                    styles.segmentButton,
+                    active && styles.segmentButtonActive,
+                    pressed && styles.pressed
+                  ]}
+                >
+                  <Text style={[styles.segmentText, active && styles.segmentTextActive]}>
+                    {item === "regular" ? "Regular" : "Playoffs"}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
         </View>
 
         {loading ? <LoadingState /> : null}
         {error ? <ErrorState error={error} onRetry={reload} /> : null}
         {!loading && !error && data?.categories.every((category) => category.leaders.length === 0) ? (
-          <EmptyState message="No leaders available for this season." />
+          <EmptyState
+            message={
+              seasonType === "playoffs"
+                ? "No playoff leaders yet for this season."
+                : "No leaders available for this season."
+            }
+          />
         ) : null}
 
         {!loading && !error && data ? (
-          <>
-            <View style={styles.statsStack}>
-              {data.categories.map((category) => (
+          <View style={styles.statsGrid}>
+            {data.categories.map((category) => (
+              <View key={category.id} style={styles.gridCell}>
                 <StatCategoryCard
                   category={category}
-                  key={category.id}
                   teamMap={data.teamMap}
                   onPress={() => setOpenStat(category.id)}
                 />
-              ))}
-            </View>
-
-            <View style={styles.compactGrid}>
-              {data.compact.map((category) => {
-                const leader = category.leaders[0];
-
-                return (
-                  <Pressable
-                    accessibilityRole="button"
-                    key={category.id}
-                    onPress={() => setOpenStat(category.id)}
-                    style={({ pressed }) => [styles.compactCard, pressed && styles.pressed]}
-                  >
-                    <View style={styles.compactHeader}>
-                      <Text style={styles.compactLabel}>{category.title}</Text>
-                    </View>
-                    {leader ? (
-                      <View style={styles.compactRow}>
-                        <PlayerAvatar player={leader.player} size={28} />
-                        <Text numberOfLines={1} style={styles.compactPlayer}>
-                          {playerName(leader.player)}
-                        </Text>
-                        <Text style={[styles.compactValue, category.id === "stl" && styles.compactValueFeatured]}>
-                          {formatLeaderValue(category.id, leader.value)}
-                        </Text>
-                      </View>
-                    ) : (
-                      <Text style={styles.compactEmpty}>Unavailable</Text>
-                    )}
-                  </Pressable>
-                );
-              })}
-            </View>
-          </>
+              </View>
+            ))}
+          </View>
         ) : null}
       </View>
+
       <PlayerLeadersModal
         visible={openStat !== null}
         initialStat={openStat}
         season={season}
+        seasonType={seasonType}
         teams={teamsArray}
         onClose={() => setOpenStat(null)}
+      />
+
+      <SeasonPickerModal
+        visible={seasonPickerOpen}
+        seasons={seasonOptions}
+        selected={season}
+        onSelect={(s) => {
+          setSeason(s);
+          setSeasonPickerOpen(false);
+        }}
+        onClose={() => setSeasonPickerOpen(false)}
       />
     </ScrollView>
   );
 }
 
-async function loadStatsData(): Promise<StatsData> {
-  // stats.nba.com rate-limits aggressive parallel requests, so fetch the six
-  // leaders categories sequentially. The backend caches them for 5 min, so
-  // subsequent loads are fast even though the cold path is serial.
+async function loadStatsData(season: number, seasonType: SeasonType): Promise<StatsData> {
+  // The backend caches the underlying LeagueDashPlayerStats payload for 5 min,
+  // so the first /leaders call warms the cache and the rest are essentially
+  // free. Sequential keeps stats.nba.com happy on a true cold start.
   const teams = await getTeams();
   const teamMap = new Map(teams.map((team) => [team.id, team]));
 
-  const allStats = [...primaryStats, ...compactStats];
   const leaderSets: NbaLeader[][] = [];
-  for (const stat of allStats) {
-    leaderSets.push(await getLeaders(stat.id, season));
+  for (const stat of leaderCategories) {
+    leaderSets.push(await getLeaders(stat.id, season, seasonType));
   }
 
-  const primaryLeaderSets = leaderSets.slice(0, primaryStats.length);
-  const compactLeaderSets = leaderSets.slice(primaryStats.length);
-
   return {
-    categories: primaryStats.map((stat, index) => ({
+    categories: leaderCategories.map((stat, index) => ({
       ...stat,
-      leaders: primaryLeaderSets[index]?.slice(0, 3) ?? []
-    })),
-    compact: compactStats.map((stat, index) => ({
-      ...stat,
-      leaders: compactLeaderSets[index]?.slice(0, 1) ?? []
+      leaders: leaderSets[index]?.slice(0, TOP_N_PER_CARD) ?? []
     })),
     teamMap
   };
+}
+
+function SeasonPickerModal({
+  visible,
+  seasons,
+  selected,
+  onSelect,
+  onClose
+}: {
+  visible: boolean;
+  seasons: number[];
+  selected: number;
+  onSelect: (season: number) => void;
+  onClose: () => void;
+}) {
+  return (
+    <Modal animationType="fade" onRequestClose={onClose} transparent visible={visible}>
+      <Pressable onPress={onClose} style={styles.pickerBackdrop}>
+        <Pressable onPress={() => undefined} style={styles.pickerSheet}>
+          <Text style={styles.pickerTitle}>Select Season</Text>
+          <ScrollView style={styles.pickerList}>
+            {seasons.map((s) => {
+              const active = s === selected;
+              return (
+                <Pressable
+                  key={s}
+                  onPress={() => onSelect(s)}
+                  style={({ pressed }) => [styles.pickerRow, pressed && styles.pressed]}
+                >
+                  <Text style={[styles.pickerRowText, active && styles.pickerRowTextActive]}>
+                    {formatSeasonLabel(s)}
+                  </Text>
+                  {active ? <Ionicons color={colors.secondary} name="checkmark" size={18} /> : null}
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
 }
 
 function StatCategoryCard({
@@ -220,7 +293,7 @@ const styles = StyleSheet.create({
     paddingBottom: 90
   },
   contentShell: {
-    maxWidth: 768,
+    maxWidth: 1320,
     paddingHorizontal: spacing.gutter,
     paddingTop: spacing.lg,
     width: "100%"
@@ -247,6 +320,119 @@ const styles = StyleSheet.create({
     marginTop: 2,
     opacity: 0.72,
     textTransform: "uppercase"
+  },
+  controlsRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: spacing.sm,
+    marginBottom: spacing.md,
+    paddingHorizontal: spacing.xs
+  },
+  seasonButton: {
+    alignItems: "center",
+    backgroundColor: colors.surfaceContainer,
+    borderColor: "rgba(255,255,255,0.08)",
+    borderRadius: radii.md,
+    borderWidth: 1,
+    flexDirection: "row",
+    gap: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm
+  },
+  seasonButtonLabel: {
+    color: "#7D8490",
+    fontFamily: fonts.bodyBold,
+    fontSize: 9,
+    letterSpacing: 0.6,
+    textTransform: "uppercase"
+  },
+  seasonButtonValue: {
+    color: colors.white,
+    fontFamily: fonts.bodyBold,
+    fontSize: 13
+  },
+  segmentedControl: {
+    backgroundColor: colors.surfaceContainer,
+    borderColor: "rgba(255,255,255,0.06)",
+    borderRadius: radii.md,
+    borderWidth: 1,
+    flexDirection: "row",
+    gap: 4,
+    padding: 4
+  },
+  segmentButton: {
+    borderRadius: 6,
+    minWidth: 84,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 6
+  },
+  segmentButtonActive: {
+    backgroundColor: colors.secondary
+  },
+  segmentText: {
+    color: "#A5ACB8",
+    fontFamily: fonts.heading,
+    fontSize: 12,
+    lineHeight: 15,
+    textAlign: "center",
+    textTransform: "capitalize"
+  },
+  segmentTextActive: {
+    color: colors.white
+  },
+  pickerBackdrop: {
+    backgroundColor: "rgba(0,0,0,0.62)",
+    flex: 1,
+    justifyContent: "flex-end"
+  },
+  pickerSheet: {
+    backgroundColor: colors.card,
+    borderTopColor: "rgba(255,255,255,0.08)",
+    borderTopLeftRadius: radii.md,
+    borderTopRightRadius: radii.md,
+    borderTopWidth: 1,
+    maxHeight: "70%",
+    padding: spacing.md
+  },
+  pickerTitle: {
+    color: colors.white,
+    fontFamily: fonts.heading,
+    fontSize: 14,
+    marginBottom: spacing.sm,
+    textAlign: "center"
+  },
+  pickerList: {
+    flexGrow: 0
+  },
+  pickerRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-between",
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 12
+  },
+  pickerRowText: {
+    color: colors.white,
+    fontFamily: fonts.bodyMedium,
+    fontSize: 13
+  },
+  pickerRowTextActive: {
+    color: colors.secondary,
+    fontFamily: fonts.bodyBold
+  },
+  // 2-column grid on wide screens; cells fall back to single column once the
+  // viewport is narrower than the per-card minWidth (so phones still get the
+  // stacked layout).
+  statsGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: spacing.gutter
+  },
+  gridCell: {
+    flexBasis: "48%",
+    flexGrow: 1,
+    minWidth: 360
   },
   statsStack: {
     gap: spacing.gutter
@@ -282,9 +468,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm
   },
-  leaderRowFeatured: {
-    backgroundColor: "rgba(255,107,0,0.06)"
-  },
   leaderDivider: {
     borderBottomColor: "rgba(255,255,255,0.06)",
     borderBottomWidth: 1
@@ -304,27 +487,6 @@ const styles = StyleSheet.create({
     textAlign: "center",
     width: 16
   },
-  rankFeatured: {
-    color: colors.secondary
-  },
-  initialsAvatar: {
-    alignItems: "center",
-    backgroundColor: "#172235",
-    borderRadius: 19,
-    height: 38,
-    justifyContent: "center",
-    width: 38
-  },
-  initialsAvatarFeatured: {
-    borderColor: colors.secondary,
-    borderWidth: 1
-  },
-  initialsText: {
-    color: colors.white,
-    fontFamily: fonts.bodyBold,
-    fontSize: 12,
-    lineHeight: 14
-  },
   leaderCopy: {
     flex: 1,
     minWidth: 0
@@ -334,9 +496,6 @@ const styles = StyleSheet.create({
     fontFamily: fonts.bodyMedium,
     fontSize: 14,
     lineHeight: 17
-  },
-  leaderNameFeatured: {
-    fontFamily: fonts.bodyBold
   },
   leaderTeam: {
     color: "#A5ACB8",
@@ -353,11 +512,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
     lineHeight: 19,
     marginLeft: spacing.sm
-  },
-  statValueFeatured: {
-    color: colors.secondary,
-    fontSize: 19,
-    lineHeight: 22
   },
   compactGrid: {
     flexDirection: "row",

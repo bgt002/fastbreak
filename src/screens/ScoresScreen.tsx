@@ -87,6 +87,22 @@ export function ScoresScreen() {
     return aggregateSeriesScores([...reconciled.values()]);
   }, [postseasonGames, games]);
 
+  // ScoreboardV2 lists every potential "if necessary" playoff game for a date,
+  // including ones for series that are already over (e.g., a Game 5 placeholder
+  // for a series someone won 4-0). Drop those so the user only sees games that
+  // will actually be played.
+  const visibleGames = useMemo(() => {
+    if (!games) return games;
+    return games.filter((game) => {
+      if (!game.postseason) return true;
+      if (getGameState(game) !== "upcoming") return true;
+      const { key } = seriesPairKey(game.home_team.id, game.visitor_team.id);
+      const series = seriesByPair.get(key);
+      if (!series) return true;
+      return series.scoreA < 4 && series.scoreB < 4;
+    });
+  }, [games, seriesByPair]);
+
   const hasLiveGame = games?.some((game) => getGameState(game) === "live") ?? false;
   useEffect(() => {
     if (selectedDate !== today || !hasLiveGame) {
@@ -127,6 +143,18 @@ export function ScoresScreen() {
   const [visibleWeekIndex, setVisibleWeekIndex] = useState(TODAY_WEEK_INDEX);
   const [pageWidth, setPageWidth] = useState(0);
   const weekListRef = useRef<FlatList<Week>>(null);
+
+  // Jump back to today. We always scroll the week strip to today's page
+  // explicitly, since the selectedDate-watching effect below is a no-op when
+  // today is already selected (e.g., the user paged the strip but didn't pick
+  // a new date).
+  const handleToday = useCallback(() => {
+    setSelectedDate(today);
+    setVisibleWeekIndex(TODAY_WEEK_INDEX);
+    if (pageWidth > 0) {
+      weekListRef.current?.scrollToIndex({ index: TODAY_WEEK_INDEX, animated: true });
+    }
+  }, [today, pageWidth]);
 
   // When user picks a date from the calendar (or anywhere else not via tap),
   // page the week list to the week that contains it.
@@ -198,14 +226,23 @@ export function ScoresScreen() {
       <View style={styles.contentShell}>
         <View style={styles.monthRow}>
           <Text style={styles.monthLabel}>{monthLabel}</Text>
-          <Pressable
-            accessibilityLabel="Open calendar"
-            hitSlop={8}
-            onPress={() => setCalendarOpen(true)}
-            style={({ pressed }) => [styles.calendarButton, pressed && styles.pressed]}
-          >
-            <Ionicons color={colors.white} name="calendar-outline" size={20} />
-          </Pressable>
+          <View style={styles.monthActions}>
+            <Pressable
+              accessibilityRole="button"
+              onPress={handleToday}
+              style={({ pressed }) => [styles.todayButton, pressed && styles.pressed]}
+            >
+              <Text style={styles.todayButtonText}>Today</Text>
+            </Pressable>
+            <Pressable
+              accessibilityLabel="Open calendar"
+              hitSlop={8}
+              onPress={() => setCalendarOpen(true)}
+              style={({ pressed }) => [styles.calendarButton, pressed && styles.pressed]}
+            >
+              <Ionicons color={colors.white} name="calendar-outline" size={20} />
+            </Pressable>
+          </View>
         </View>
         <View
           onLayout={(e) => setPageWidth(e.nativeEvent.layout.width)}
@@ -262,18 +299,22 @@ export function ScoresScreen() {
             <View style={styles.liveDot} />
             <Text style={styles.sectionTitle}>NBA Games</Text>
           </View>
+          <View style={styles.localTimeNotice}>
+            <Ionicons color="#7D8490" name="time-outline" size={11} />
+            <Text style={styles.localTimeNoticeText}>Times shown in local time</Text>
+          </View>
         </View>
 
         <View {...swipeResponder.panHandlers}>
           {loading ? <LoadingState /> : null}
           {error ? <ErrorState error={error} onRetry={reload} /> : null}
-          {!loading && !error && games?.length === 0 ? (
+          {!loading && !error && visibleGames?.length === 0 ? (
             <EmptyState message="No NBA games scheduled for this date." title="No Games" />
           ) : null}
 
-          {!loading && !error && games ? (
+          {!loading && !error && visibleGames ? (
             <View style={styles.gamesStack}>
-              {games.map((game) => (
+              {visibleGames.map((game) => (
                 <GameCard
                   game={game}
                   key={game.id}
@@ -417,6 +458,7 @@ function GameCard({
   const visitorLosing = isFinal && game.visitor_team_score < game.home_team_score;
 
   const seriesLabel = game.postseason ? getSeriesLabel(seriesByPair, game) : null;
+  const ifNecessary = state === "upcoming" && Boolean(game.if_necessary);
   const visitorRecord = !game.postseason ? recordByTeam.get(game.visitor_team.id) : undefined;
   const homeRecord = !game.postseason ? recordByTeam.get(game.home_team.id) : undefined;
 
@@ -442,11 +484,17 @@ function GameCard({
       <View style={styles.gameCardMain}>
         <TeamBadge team={game.visitor_team} record={visitorRecord} />
         <View style={styles.matchupCenter}>
+          {game.postseason && game.series_label ? (
+            <Text style={styles.playoffRoundLabel}>{game.series_label}</Text>
+          ) : null}
           {topLabel ? (
             <Text style={[styles.gameMeta, isLive && !seriesLabel && styles.gameMetaLive]}>{topLabel}</Text>
           ) : null}
           {state === "upcoming" ? (
-            <Text style={styles.tipTime}>{clockLabel}</Text>
+            <>
+              <Text style={styles.tipTime}>{ifNecessary ? "TBD" : clockLabel}</Text>
+              {ifNecessary ? <Text style={styles.ifNecessary}>*if necessary</Text> : null}
+            </>
           ) : (
             <View style={[styles.scoreRow, isFinal && styles.finalScoreRow]}>
               <Text
@@ -553,6 +601,26 @@ const styles = StyleSheet.create({
     fontFamily: fonts.heading,
     fontSize: 16,
     letterSpacing: 0.6
+  },
+  monthActions: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: spacing.sm
+  },
+  todayButton: {
+    backgroundColor: colors.surfaceContainer,
+    borderColor: "rgba(255,255,255,0.08)",
+    borderRadius: radii.sm,
+    borderWidth: 1,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 7
+  },
+  todayButtonText: {
+    color: colors.secondary,
+    fontFamily: fonts.bodyBold,
+    fontSize: 10,
+    letterSpacing: 0.6,
+    textTransform: "uppercase"
   },
   weekViewport: {
     paddingBottom: spacing.sm,
@@ -718,6 +786,17 @@ const styles = StyleSheet.create({
     lineHeight: 16,
     textTransform: "uppercase"
   },
+  localTimeNotice: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 4
+  },
+  localTimeNoticeText: {
+    color: "#7D8490",
+    fontFamily: fonts.bodyMedium,
+    fontSize: 10,
+    letterSpacing: 0.3
+  },
   viewAll: {
     color: colors.secondary,
     fontFamily: fonts.bodyBold,
@@ -785,6 +864,16 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "center"
   },
+  playoffRoundLabel: {
+    color: colors.secondary,
+    fontFamily: fonts.bodyBold,
+    fontSize: 9,
+    letterSpacing: 0.9,
+    lineHeight: 11,
+    marginBottom: 4,
+    textAlign: "center",
+    textTransform: "uppercase"
+  },
   gameMeta: {
     color: "#7D8490",
     fontFamily: fonts.bodyBold,
@@ -851,6 +940,14 @@ const styles = StyleSheet.create({
     fontFamily: fonts.scoreboard,
     fontSize: 19,
     lineHeight: 22
+  },
+  ifNecessary: {
+    color: "#7D8490",
+    fontFamily: fonts.bodyMedium,
+    fontSize: 10,
+    fontStyle: "italic",
+    letterSpacing: 0.3,
+    marginTop: 2
   },
   contextPill: {
     backgroundColor: "rgba(255,255,255,0.06)",

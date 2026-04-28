@@ -2,7 +2,7 @@ import json
 import re
 import urllib.request
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from time import monotonic
 from typing import Any, Callable, TypeVar
 from zoneinfo import ZoneInfo
@@ -50,7 +50,7 @@ _DIVISION_BY_ABBR: dict[str, str] = {
 
 _TEAM_LOOKUP: dict[int, dict[str, Any]] = {}
 
-_VALID_STAT_CATEGORIES = {"PTS", "REB", "AST", "STL", "BLK", "FG_PCT"}
+_VALID_STAT_CATEGORIES = {"PTS", "REB", "AST", "STL", "BLK", "FG_PCT", "FG3M", "FG3_PCT", "FT_PCT"}
 
 # Cache the full per-player stats payload (one call covers all six leader
 # categories) so we hit stats.nba.com once per season per ~5 min instead of
@@ -149,9 +149,94 @@ def list_games(date: str = Query(..., description="YYYY-MM-DD")):
     # any date — today's live games as well as previous-day games still
     # running past midnight ET.
     _apply_live_overlay(games)
+    # nba_api marks playoff "if-necessary" games as TBD with no tip-off time
+    # until the prior game finishes; ESPN often has the actual scheduled time
+    # earlier. Backfill from there when nba_api leaves it blank.
+    _apply_espn_tipoffs(games, parsed)
 
     games.sort(key=lambda g: g.get("datetime") or g.get("date") or "")
     return {"data": games}
+
+
+def _apply_espn_tipoffs(games: list[dict[str, Any]], parsed_date: datetime) -> None:
+    # Default the playoff metadata for every game so the field is always present
+    # on the frontend (None / False) even if ESPN doesn't recognize the matchup.
+    for game in games:
+        game.setdefault("if_necessary", False)
+        game.setdefault("series_game_number", None)
+        game.setdefault("series_label", None)
+
+    if not games:
+        return
+
+    date_str = parsed_date.strftime("%Y%m%d")
+    try:
+        req = urllib.request.Request(
+            f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={date_str}",
+            headers={"Accept": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=8) as r:
+            payload = json.loads(r.read())
+    except Exception:
+        return
+
+    by_pair: dict[tuple[str, str], dict[str, Any]] = {}
+    for ev in payload.get("events") or []:
+        comps = ev.get("competitions") or []
+        if not comps:
+            continue
+        competitors = comps[0].get("competitors") or []
+        away = next((c for c in competitors if c.get("homeAway") == "away"), None)
+        home = next((c for c in competitors if c.get("homeAway") == "home"), None)
+        if not (away and home):
+            continue
+        away_abbr = _normalize_espn_abbr((away.get("team") or {}).get("abbreviation"))
+        home_abbr = _normalize_espn_abbr((home.get("team") or {}).get("abbreviation"))
+        if not (away_abbr and home_abbr):
+            continue
+        notes_text = " ".join((n.get("headline") or "") for n in (comps[0].get("notes") or []))
+        match = re.search(r"Game\s+(\d+)", notes_text, re.IGNORECASE)
+        # ESPN sets timeValid=False when the game is on the schedule but the
+        # league hasn't published a tip-off time yet (date defaults to midnight
+        # ET, e.g. "T04:00Z"). Treat the time as unknown in that case.
+        time_valid = bool(comps[0].get("timeValid"))
+        by_pair[(away_abbr, home_abbr)] = {
+            "tip_off": ev.get("date") if time_valid else None,
+            "if_necessary": "if necessary" in notes_text.lower(),
+            "series_game_number": int(match.group(1)) if match else None,
+            "series_label": _format_series_label(notes_text),
+        }
+
+    for game in games:
+        away_abbr = (game.get("visitor_team") or {}).get("abbreviation")
+        home_abbr = (game.get("home_team") or {}).get("abbreviation")
+        if not (away_abbr and home_abbr):
+            continue
+        info = by_pair.get((away_abbr, home_abbr))
+        if not info:
+            continue
+        if not game.get("tip_off") and info["tip_off"]:
+            game["tip_off"] = info["tip_off"]
+        game["if_necessary"] = info["if_necessary"]
+        game["series_game_number"] = info["series_game_number"]
+        game["series_label"] = info["series_label"]
+
+
+_ORDINAL_TO_WORD = {"1st": "First", "2nd": "Second", "3rd": "Third", "4th": "Fourth"}
+
+
+def _format_series_label(notes_text: str) -> str | None:
+    """Turn ESPN's note headline (e.g. 'East 1st Round - Game 6 If Necessary')
+    into a display label like 'East First Round - Game 6'. Drops the optional
+    'If Necessary' suffix because that's surfaced separately in the UI."""
+    if not notes_text:
+        return None
+    label = re.sub(r"\s*if\s+necessary\s*$", "", notes_text.strip(), flags=re.IGNORECASE).strip()
+    if not label:
+        return None
+    for ordinal, word in _ORDINAL_TO_WORD.items():
+        label = re.sub(rf"\b{ordinal}\b", word, label, flags=re.IGNORECASE)
+    return label
 
 
 def _apply_live_overlay(games: list[dict[str, Any]]) -> None:
@@ -678,15 +763,21 @@ def list_leaders(
         raise HTTPException(status_code=400, detail="season_type must be 'Regular Season' or 'Playoffs'")
 
     rows = _get_player_stats(season, season_type)
-    min_gp = 5 if season_type == "Playoffs" else 15
+    min_gp = _qualification_min_gp(rows, season_type)
 
     qualified: list[dict[str, Any]] = []
     for row in rows:
         if int(row.get("GP") or 0) < min_gp:
             continue
-        # Percentage leaders require a minimum attempt rate, otherwise a 2-for-2
-        # bench player tops the list.
-        if stat_upper == "FG_PCT" and float(row.get("FGA") or 0) < 4.0:
+        # Percentage leaders use NBA's "makes" pace rule: 300 FGM / 82 FT / 125
+        # FTM over a full season, expressed as a per-game floor. This matches
+        # the official qualification and is the same threshold mid-season since
+        # PerGame stats are already pace-normalized.
+        if stat_upper == "FG_PCT" and float(row.get("FGM") or 0) < (300 / 82):
+            continue
+        if stat_upper == "FG3_PCT" and float(row.get("FG3M") or 0) < (82 / 82):
+            continue
+        if stat_upper == "FT_PCT" and float(row.get("FTM") or 0) < (125 / 82):
             continue
         value = row.get(stat_upper)
         if value is None:
@@ -738,7 +829,7 @@ def list_players(
 
     rows = _get_player_stats(season, season_type)
     index = _get_player_index(season)
-    min_gp = 5 if season_type == "Playoffs" else 15
+    min_gp = _qualification_min_gp(rows, season_type)
 
     players: list[dict[str, Any]] = []
     for row in rows:
@@ -772,15 +863,40 @@ def list_players(
                     "stl": float(row.get("STL") or 0),
                     "blk": float(row.get("BLK") or 0),
                     "tov": float(row.get("TOV") or 0),
+                    "fgm": float(row.get("FGM") or 0),
+                    "fga": float(row.get("FGA") or 0),
                     "fg_pct": float(row.get("FG_PCT") or 0),
+                    "fg3m": float(row.get("FG3M") or 0),
+                    "fg3a": float(row.get("FG3A") or 0),
                     "fg3_pct": float(row.get("FG3_PCT") or 0),
+                    "ftm": float(row.get("FTM") or 0),
+                    "fta": float(row.get("FTA") or 0),
                     "ft_pct": float(row.get("FT_PCT") or 0),
+                    "dd2": int(row.get("DD2") or 0),
+                    "td3": int(row.get("TD3") or 0),
                 },
                 "season": season,
             }
         )
 
     return {"data": players}
+
+
+def _qualification_min_gp(rows: list[dict[str, Any]], season_type: str) -> int:
+    """NBA's stat-leader rule: a player must have appeared in at least 70% of
+    the team's games (or 58 games for a full 82-game season, whichever is
+    less). We approximate the team's games by the league-wide max GP, which
+    sidesteps the need to query schedules."""
+    max_gp = max((int(r.get("GP") or 0) for r in rows), default=0)
+    if max_gp == 0:
+        return 0
+    threshold = int(0.70 * max_gp)
+    if season_type == "Regular Season":
+        # Cap at 58 (NBA's hard floor for a finished 82-game season).
+        return min(58, threshold) if max_gp >= 70 else threshold
+    # Playoffs are short — most teams play 4-7 games per round, so 70% of the
+    # league-leading total still keeps the bar at "started multiple rounds".
+    return max(1, threshold)
 
 
 def _get_player_stats(season: int, season_type: str) -> list[dict[str, Any]]:
@@ -853,6 +969,11 @@ def list_standings(season: int = Query(..., description="Starting year, e.g., 20
                 "division_record": str(row.get("DivisionRecord") or ""),
                 "home_record": str(row.get("HOME") or ""),
                 "road_record": str(row.get("ROAD") or ""),
+                "last_ten": str(row.get("L10") or ""),
+                "streak": str(row.get("strCurrentStreak") or "").strip(),
+                "points_pg": float(row.get("PointsPG") or 0),
+                "opp_points_pg": float(row.get("OppPointsPG") or 0),
+                "diff_points_pg": float(row.get("DiffPointsPG") or 0),
                 "season": season,
             }
         )
@@ -915,6 +1036,67 @@ def list_playoff_games(season: int = Query(..., description="Starting year, e.g.
 
     games = [g for g in games_by_id.values() if g["home_team"] and g["visitor_team"]]
     games.sort(key=lambda g: g.get("date") or "")
+    return {"data": games}
+
+
+@app.get("/upcoming-playoff-games")
+def upcoming_playoff_games(
+    season: int = Query(..., description="Starting year, e.g., 2025 for 2025-26"),
+    days: int = Query(14, description="Forward window in days"),
+):
+    # ESPN's scoreboard supports a hyphenated date range, so a single call covers
+    # the whole window we care about. nba_api would require N round-trips here.
+    today = datetime.now(EASTERN).date()
+    start = today.strftime("%Y%m%d")
+    end = (today + timedelta(days=days)).strftime("%Y%m%d")
+
+    try:
+        req = urllib.request.Request(
+            f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={start}-{end}",
+            headers={"Accept": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            payload = json.loads(r.read())
+    except Exception as err:
+        raise HTTPException(status_code=502, detail=f"ESPN unavailable: {err}") from err
+
+    games: list[dict[str, Any]] = []
+    for ev in payload.get("events") or []:
+        comps = ev.get("competitions") or []
+        if not comps:
+            continue
+        comp = comps[0]
+        notes_text = " ".join((n.get("headline") or "") for n in (comp.get("notes") or []))
+        # Postseason games carry round/finals/conference in their note headlines.
+        if not re.search(r"Round|Final|Conference", notes_text, re.IGNORECASE):
+            continue
+
+        competitors = comp.get("competitors") or []
+        away = next((c for c in competitors if c.get("homeAway") == "away"), None)
+        home = next((c for c in competitors if c.get("homeAway") == "home"), None)
+        if not (away and home):
+            continue
+        away_abbr = _normalize_espn_abbr((away.get("team") or {}).get("abbreviation"))
+        home_abbr = _normalize_espn_abbr((home.get("team") or {}).get("abbreviation"))
+        if not (away_abbr and home_abbr):
+            continue
+
+        time_valid = bool(comp.get("timeValid"))
+        match = re.search(r"Game\s+(\d+)", notes_text, re.IGNORECASE)
+        date_iso = ev.get("date")
+
+        games.append(
+            {
+                "visitor_abbr": away_abbr,
+                "home_abbr": home_abbr,
+                "date": date_iso,
+                "tip_off": date_iso if time_valid else None,
+                "if_necessary": "if necessary" in notes_text.lower(),
+                "series_game_number": int(match.group(1)) if match else None,
+                "season": season,
+            }
+        )
+
     return {"data": games}
 
 

@@ -18,6 +18,9 @@ export type NbaGame = {
   datetime: string | null;
   tip_off: string | null;
   postseason: boolean;
+  if_necessary?: boolean;
+  series_game_number?: number | null;
+  series_label?: string | null;
   home_team_score: number;
   visitor_team_score: number;
   home_team: NbaTeam;
@@ -94,9 +97,17 @@ export type NbaPlayerSeasonStats = {
     stl: number;
     blk: number;
     tov: number;
+    fgm: number;
+    fga: number;
     fg_pct: number;
+    fg3m: number;
+    fg3a: number;
     fg3_pct: number;
+    ftm: number;
+    fta: number;
     ft_pct: number;
+    dd2: number;
+    td3: number;
   };
   season: number;
 };
@@ -111,6 +122,11 @@ export type NbaStanding = {
   losses: number;
   home_record: string;
   road_record: string;
+  last_ten?: string;
+  streak?: string;
+  points_pg?: number;
+  opp_points_pg?: number;
+  diff_points_pg?: number;
   season: number;
 };
 
@@ -118,7 +134,16 @@ export type NbaListResponse<T> = {
   data: T[];
 };
 
-export type StatType = "pts" | "reb" | "ast" | "stl" | "blk" | "fg_pct";
+export type StatType =
+  | "pts"
+  | "reb"
+  | "ast"
+  | "stl"
+  | "blk"
+  | "fg_pct"
+  | "fg3m"
+  | "fg3_pct"
+  | "ft_pct";
 
 export class NbaApiError extends Error {
   status?: number;
@@ -223,7 +248,7 @@ export function playerInitials(player: Pick<NbaPlayer, "first_name" | "last_name
 }
 
 export function formatLeaderValue(statType: StatType, value: number) {
-  if (statType === "fg_pct") {
+  if (statType === "fg_pct" || statType === "fg3_pct" || statType === "ft_pct") {
     const pct = value > 1 ? value : value * 100;
     return `${pct.toFixed(1)}%`;
   }
@@ -276,8 +301,7 @@ export function formatTipOff(game: NbaGame): string | null {
   }
   return date.toLocaleTimeString(undefined, {
     hour: "numeric",
-    minute: "2-digit",
-    timeZoneName: "short"
+    minute: "2-digit"
   });
 }
 
@@ -343,6 +367,24 @@ export async function getPlayerSeasonStats(season: number, seasonType: "regular"
 
 export async function getBoxScore(gameId: string) {
   const response = await request<{ data: NbaBoxScore }>("/boxscore", { gameId });
+  return response.data;
+}
+
+export type NbaUpcomingPlayoffGame = {
+  visitor_abbr: string;
+  home_abbr: string;
+  date: string | null;
+  tip_off: string | null;
+  if_necessary: boolean;
+  series_game_number: number | null;
+  season: number;
+};
+
+export async function getUpcomingPlayoffGames(season: number, days = 14) {
+  const response = await request<NbaListResponse<NbaUpcomingPlayoffGame>>(
+    "/upcoming-playoff-games",
+    { season, days }
+  );
   return response.data;
 }
 

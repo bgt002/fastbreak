@@ -115,7 +115,7 @@ export function BoxScoreModal({ game, onClose }: Props) {
   );
 }
 
-function BoxScoreContent({ game }: { game: NbaGame }) {
+export function BoxScoreContent({ game }: { game: NbaGame }) {
   const state = getGameState(game);
   const isUpcoming = state === "upcoming";
   const isLive = state === "live";
@@ -228,7 +228,7 @@ function BoxScoreContent({ game }: { game: NbaGame }) {
                 />
                 {activeTeam ? <TableStickyHeader scrollRef={stickyHeaderScrollRef} /> : null}
               </View>
-              {activeTeam ? <TableBody team={activeTeam} scrollX={horizontalScrollX} /> : null}
+              {activeTeam ? <TableBody team={activeTeam} scrollX={horizontalScrollX} showOnCourt={isLive} /> : null}
             </ScrollView>
           ) : null}
         </>
@@ -242,6 +242,8 @@ function orderTeams(teams: NbaBoxScoreTeam[], game: NbaGame): NbaBoxScoreTeam[] 
   const home = teams.find((t) => t.team.id === game.home_team.id);
   return [visitor, home].filter((t): t is NbaBoxScoreTeam => Boolean(t));
 }
+
+const CONTENT_MAX_WIDTH = 1080;
 
 function LineScoreTable({ teams, game }: { teams: NbaBoxScoreTeam[]; game: NbaGame }) {
   if (teams.length === 0) return null;
@@ -333,7 +335,7 @@ function TableStickyHeader({ scrollRef }: { scrollRef: React.RefObject<ScrollVie
       showsHorizontalScrollIndicator={false}
       style={styles.stickyHeaderRow}
     >
-      <View style={[styles.table, styles.tableHeaderRow, { width: tableWidth }]}>
+      <View style={[styles.table, styles.tableHeaderRow]}>
         <View style={[styles.tableRow, styles.tableHeader]}>
           <Text style={[styles.headerCell, styles.playerCell]}>Player</Text>
           {statColumns.map((column) => (
@@ -347,7 +349,15 @@ function TableStickyHeader({ scrollRef }: { scrollRef: React.RefObject<ScrollVie
   );
 }
 
-function TableBody({ team, scrollX }: { team: NbaBoxScoreTeam; scrollX: Animated.Value }) {
+function TableBody({
+  team,
+  scrollX,
+  showOnCourt
+}: {
+  team: NbaBoxScoreTeam;
+  scrollX: Animated.Value;
+  showOnCourt: boolean;
+}) {
   const starters = team.players.filter((player) => player.starter);
   const bench = team.players.filter((player) => !player.starter);
   const totals = computeTotals(team.players);
@@ -356,6 +366,7 @@ function TableBody({ team, scrollX }: { team: NbaBoxScoreTeam; scrollX: Animated
     <View style={styles.teamSection}>
       <Animated.ScrollView
         horizontal
+        contentContainerStyle={styles.tableScroll}
         onScroll={Animated.event(
           [{ nativeEvent: { contentOffset: { x: scrollX } } }],
           { useNativeDriver: false }
@@ -363,15 +374,15 @@ function TableBody({ team, scrollX }: { team: NbaBoxScoreTeam; scrollX: Animated
         scrollEventThrottle={16}
         showsHorizontalScrollIndicator
       >
-        <View style={[styles.table, { width: tableWidth }]}>
+        <View style={styles.table}>
           {starters.length > 0 ? <SectionLabel label="Starters" /> : null}
           {starters.map((player) => (
-            <PlayerRow key={player.player_id} player={player} />
+            <PlayerRow key={player.player_id} player={player} showOnCourt={showOnCourt} />
           ))}
 
           {bench.length > 0 ? <SectionLabel label="Bench" /> : null}
           {bench.map((player) => (
-            <PlayerRow key={player.player_id} player={player} />
+            <PlayerRow key={player.player_id} player={player} showOnCourt={showOnCourt} />
           ))}
 
           <TotalsRow totals={totals} />
@@ -383,17 +394,26 @@ function TableBody({ team, scrollX }: { team: NbaBoxScoreTeam; scrollX: Animated
 
 function SectionLabel({ label }: { label: string }) {
   return (
-    <View style={[styles.sectionLabelRow, { width: tableWidth }]}>
+    <View style={styles.sectionLabelRow}>
       <Text style={styles.sectionLabel}>{label}</Text>
     </View>
   );
 }
 
-const PlayerRow = memo(function PlayerRow({ player }: { player: NbaBoxScorePlayer }) {
+const PlayerRow = memo(function PlayerRow({
+  player,
+  showOnCourt
+}: {
+  player: NbaBoxScorePlayer;
+  showOnCourt: boolean;
+}) {
+  // The on_court flag from cdn.nba.com sticks around in the box score data
+  // even after a game ends, so only honor it while the game is actually live.
+  const onCourt = showOnCourt && player.on_court;
   return (
     <View style={[styles.tableRow, styles.bodyRow]}>
       <View style={[styles.playerCell, styles.playerCellInner]}>
-        {player.on_court ? <View style={styles.onCourtDot} /> : <View style={styles.onCourtSpacer} />}
+        {onCourt ? <View style={styles.onCourtDot} /> : <View style={styles.onCourtSpacer} />}
         <Text numberOfLines={1} style={styles.playerName}>
           {player.name}
         </Text>
@@ -498,11 +518,21 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.xl,
     paddingTop: spacing.md
   },
+  // The three top-level body sections all cap at the same max width and
+  // self-center, so on wide desktop panes they sit as a single centered column
+  // (eliminates the "shifted left, whitespace on the right" feel) while still
+  // filling narrower mobile widths.
   teamSection: {
-    marginBottom: spacing.lg
+    alignSelf: "center",
+    marginBottom: spacing.lg,
+    maxWidth: CONTENT_MAX_WIDTH,
+    width: "100%"
   },
   stickyBlock: {
-    backgroundColor: colors.background
+    alignSelf: "center",
+    backgroundColor: colors.background,
+    maxWidth: CONTENT_MAX_WIDTH,
+    width: "100%"
   },
   stickyHeaderRow: {
     backgroundColor: colors.background
@@ -511,10 +541,13 @@ const styles = StyleSheet.create({
     backgroundColor: colors.background
   },
   lineScore: {
+    alignSelf: "center",
     borderBottomColor: "rgba(255,255,255,0.06)",
     borderBottomWidth: 1,
+    maxWidth: CONTENT_MAX_WIDTH,
     paddingHorizontal: spacing.gutter,
-    paddingVertical: spacing.md
+    paddingVertical: spacing.md,
+    width: "100%"
   },
   lineScoreRow: {
     alignItems: "center",
@@ -598,7 +631,17 @@ const styles = StyleSheet.create({
   toggleTextActive: {
     color: colors.white
   },
+  // The table flexes to fill its wrapper, but never below the sum of all
+  // column widths — so on narrow viewports horizontal scrolling still works.
+  // flexGrow on the horizontal ScrollView's contentContainer makes it expand
+  // to fill the wrapper width when the table fits, so the inner table can
+  // claim the extra space via its own `flex: 1`.
+  tableScroll: {
+    flexGrow: 1
+  },
   table: {
+    flex: 1,
+    minWidth: tableWidth,
     paddingHorizontal: spacing.gutter
   },
   tableRow: {
@@ -620,9 +663,12 @@ const styles = StyleSheet.create({
     textAlign: "center",
     textTransform: "uppercase"
   },
+  // Player column stretches so the stat columns end at the right edge of the
+  // (now full-width) table, instead of being clustered on the left.
   playerCell: {
-    paddingHorizontal: 4,
-    width: 180
+    flex: 1,
+    minWidth: 180,
+    paddingHorizontal: 4
   },
   playerCellInner: {
     alignItems: "center",
@@ -678,6 +724,7 @@ const styles = StyleSheet.create({
     fontSize: 12
   },
   sectionLabelRow: {
+    alignSelf: "stretch",
     backgroundColor: "rgba(14, 30, 54, 0.42)",
     paddingHorizontal: 4,
     paddingVertical: 4

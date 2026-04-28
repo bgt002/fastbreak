@@ -47,3 +47,26 @@ export const spacing = {
   lg: 24,
   xl: 40
 };
+
+// Breakpoints picked from real-world device widths (CSS pixels):
+//   xs : <380   - iPhone SE (375), Galaxy S25 (360)
+//   sm : 380   - iPhone 14/15 (390), iPhone 16 Pro (393)
+//   md : 640   - large phones in landscape, small tablets
+//   lg : 1024  - iPad landscape (1024), iPad Pro 11" landscape (1194)
+//   xl : 1280  - 13" MacBooks and most laptops
+//   xxl: 1600  - desktops/external monitors
+//
+// `lg` is the cutoff where the chrome switches from mobile (bottom tabs) to
+// desktop (sidebar). iPad portrait (768/834) stays on the mobile chrome —
+// that layout already works at those widths and the touch target sizing is
+// tuned for it. Landscape iPad and everything above gets the desktop tree.
+export const breakpoints = {
+  xs: 0,
+  sm: 380,
+  md: 640,
+  lg: 1024,
+  xl: 1280,
+  xxl: 1600
+} as const;
+
+export const desktopBreakpoint = breakpoints.lg;
