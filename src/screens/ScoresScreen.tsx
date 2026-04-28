@@ -160,28 +160,31 @@ export function ScoresScreen() {
     }
   }, [today, pageWidth]);
 
-  // FlatList's `initialScrollIndex` is unreliable on react-native-web (the
-  // list sometimes lands at index 0 anyway). Force the correct position the
-  // first time `pageWidth` is known, using `scrollToOffset` rather than
-  // `scrollToIndex` because the offset call doesn't depend on the
-  // getItemLayout/measurement plumbing that flakes on web.
+  // On react-native-web, FlatList's `initialScrollIndex` and any
+  // `scrollToOffset` fired from a mount-time useEffect both race the underlying
+  // ScrollView's content measurement — calls dispatched before the content is
+  // sized silently land at offset 0. The reliable signal is
+  // `onContentSizeChange`, which fires *after* the FlatList has measured its
+  // virtualized content, so a scrollToOffset queued there will stick. We still
+  // keep a useEffect fallback so subsequent re-measures (e.g., orientation
+  // change) re-snap if needed.
   const hasForcedInitialScroll = useRef(false);
-  useEffect(() => {
+  const forceInitialScroll = useCallback(() => {
     if (hasForcedInitialScroll.current || pageWidth <= 0) return;
     const startIso = formatIsoDate(startOfWeek(selectedDate));
     const idx = weeks.findIndex((w) => w.id === startIso);
     if (idx < 0) return;
     hasForcedInitialScroll.current = true;
     setVisibleWeekIndex(idx);
-    // Two RAFs to give the FlatList two layout passes before we scroll —
-    // belt-and-suspenders against initial-render timing differences across
-    // platforms.
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        weekListRef.current?.scrollToOffset({ offset: idx * pageWidth, animated: false });
-      });
-    });
+    weekListRef.current?.scrollToOffset({ offset: idx * pageWidth, animated: false });
   }, [pageWidth, weeks, selectedDate]);
+
+  useEffect(() => {
+    if (hasForcedInitialScroll.current || pageWidth <= 0) return;
+    requestAnimationFrame(() => {
+      requestAnimationFrame(forceInitialScroll);
+    });
+  }, [pageWidth, forceInitialScroll]);
 
   // When the user picks a date from the calendar (or anywhere else not via
   // tap), page the week list to the week that contains it.
@@ -212,11 +215,16 @@ export function ScoresScreen() {
     });
   }, [weeks, visibleWeekIndex]);
 
-  const handleWeekScrollEnd = useCallback(
+  // We listen to onScroll (not just onMomentumScrollEnd) because RNW doesn't
+  // reliably fire onMomentumScrollEnd for paging-enabled horizontal lists —
+  // so without this, swiping through weeks never updates visibleWeekIndex,
+  // and the "April 2026" header stays frozen on the original week's month.
+  const handleWeekScroll = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
       if (pageWidth <= 0) return;
       const idx = Math.round(e.nativeEvent.contentOffset.x / pageWidth);
-      setVisibleWeekIndex(Math.max(0, Math.min(weeks.length - 1, idx)));
+      const clamped = Math.max(0, Math.min(weeks.length - 1, idx));
+      setVisibleWeekIndex((prev) => (prev === clamped ? prev : clamped));
     },
     [pageWidth, weeks.length]
   );
@@ -286,10 +294,11 @@ export function ScoresScreen() {
                 index: idx
               })}
               horizontal
-              initialScrollIndex={TODAY_WEEK_INDEX}
               keyExtractor={(week) => week.id}
-              onMomentumScrollEnd={handleWeekScrollEnd}
+              onContentSizeChange={forceInitialScroll}
+              onScroll={handleWeekScroll}
               pagingEnabled
+              scrollEventThrottle={16}
               showsHorizontalScrollIndicator={false}
               renderItem={({ item: week }) => (
                 <View style={[styles.weekPage, { width: pageWidth }]}>
