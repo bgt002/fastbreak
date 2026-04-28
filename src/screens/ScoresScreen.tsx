@@ -15,6 +15,7 @@ import {
   View
 } from "react-native";
 
+import { NAV_CLEARANCE } from "../components/AppChrome";
 import { BoxScoreModal } from "../components/BoxScoreModal";
 import { EmptyState, ErrorState, LoadingState } from "../components/DataState";
 import { useAsyncData } from "../hooks/useAsyncData";
@@ -243,7 +244,7 @@ export function ScoresScreen() {
 
   return (
     <ScrollView
-      contentContainerStyle={styles.scrollContent}
+      contentContainerStyle={[styles.scrollContent, { paddingBottom: NAV_CLEARANCE as number }]}
       showsVerticalScrollIndicator={false}
       refreshControl={
         <RefreshControl refreshing={refreshing} onRefresh={handlePullRefresh} tintColor={colors.secondary} />
@@ -607,8 +608,7 @@ function getSeriesLabel(seriesMap: Map<string, SeriesEntry>, game: NbaGame): str
 
 const styles = StyleSheet.create({
   scrollContent: {
-    alignItems: "center",
-    paddingBottom: 86
+    alignItems: "center"
   },
   contentShell: {
     maxWidth: 768,

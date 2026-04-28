@@ -7,7 +7,8 @@ import {
   StatusBar as NativeStatusBar,
   StyleSheet,
   Text,
-  View
+  View,
+  type ViewStyle
 } from "react-native";
 
 import { navItems, type NavItem, type TabId } from "../navigation";
@@ -19,24 +20,32 @@ type AppChromeProps = PropsWithChildren<{
   items?: NavItem[];
 }>;
 
-// react-native-web's SafeAreaView already applies `env(safe-area-inset-*)`
-// padding on all four sides, so we don't add it again here. (Earlier we did,
-// which double-padded the top and bottom in iOS PWA standalone mode.)
+// On web (incl. iOS/Android PWA standalone) we deliberately skip
+// react-native-web's SafeAreaView wrapper. RNW's SafeAreaView pads the
+// *outer* container with env(safe-area-inset-*), which pushes the topbar's
+// dark background down — leaving the page background showing as a tall dark
+// gap under the status bar. Instead, we let the chrome extend edge-to-edge
+// and push env() padding *inside* the topbar / bottom nav, so their dark
+// backgrounds extend full-bleed under the translucent status bar and home
+// indicator (matching native iOS apps).
 export function AppChrome({ activeTab, children, onTabChange, items = navItems }: AppChromeProps) {
-  return (
-    <SafeAreaView style={styles.safeArea}>
-      <View style={styles.screen}>
-        <TopBar />
-        <View style={styles.content}>{children}</View>
-        <BottomNav activeId={activeTab} items={items} onTabChange={onTabChange} />
-      </View>
-    </SafeAreaView>
+  const tree = (
+    <View style={styles.screen}>
+      <TopBar />
+      <View style={styles.content}>{children}</View>
+      <BottomNav activeId={activeTab} items={items} onTabChange={onTabChange} />
+    </View>
   );
+
+  if (Platform.OS === "web") {
+    return tree;
+  }
+  return <SafeAreaView style={styles.safeArea}>{tree}</SafeAreaView>;
 }
 
 function TopBar() {
   return (
-    <View style={styles.topBar}>
+    <View style={[styles.topBar, webTopBarSafeArea]}>
       <View style={styles.topBarInner}>
         <View style={styles.brandRow}>
           <Ionicons color={colors.secondary} name="basketball-outline" size={20} />
@@ -57,7 +66,7 @@ function BottomNav({
   onTabChange: (tab: TabId) => void;
 }) {
   return (
-    <View style={styles.bottomNav}>
+    <View style={[styles.bottomNav, webBottomNavSafeArea]}>
       <View style={styles.bottomNavInner}>
         {items.map((item) => {
           const active = item.id === activeId;
@@ -81,6 +90,34 @@ function BottomNav({
 }
 
 const topInset = Platform.OS === "android" ? NativeStatusBar.currentHeight ?? 0 : 0;
+
+// On web we let the topbar / bottom nav extend full-bleed, then apply
+// env(safe-area-inset-*) padding inside them so their dark backgrounds slide
+// under the iOS status bar / home indicator while the actual content (logo,
+// nav buttons) stays inside the safe area. Cast to any: env() is a CSS
+// expression that RN's typed paddingTop doesn't allow, but RNW passes it
+// through to inline style as-is.
+const webTopBarSafeArea = (Platform.OS === "web"
+  ? {
+      paddingTop: "env(safe-area-inset-top)",
+      paddingLeft: "env(safe-area-inset-left)",
+      paddingRight: "env(safe-area-inset-right)"
+    }
+  : null) as ViewStyle | null;
+
+const webBottomNavSafeArea = (Platform.OS === "web"
+  ? {
+      paddingBottom: "env(safe-area-inset-bottom)",
+      paddingLeft: "env(safe-area-inset-left)",
+      paddingRight: "env(safe-area-inset-right)"
+    }
+  : null) as ViewStyle | null;
+
+// Bottom padding screens should add to scrollable content so the last items
+// clear the absolutely-positioned BottomNav (which is `nav height + iOS home
+// indicator inset` on web). Pass to ScrollView/FlatList contentContainerStyle.
+export const NAV_CLEARANCE: number | string =
+  Platform.OS === "web" ? "calc(86px + env(safe-area-inset-bottom))" : 86;
 
 const styles = StyleSheet.create({
   safeArea: {

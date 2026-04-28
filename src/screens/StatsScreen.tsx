@@ -2,6 +2,7 @@ import Ionicons from "@expo/vector-icons/Ionicons";
 import { useCallback, useMemo, useState } from "react";
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
+import { NAV_CLEARANCE } from "../components/AppChrome";
 import { EmptyState, ErrorState, LoadingState } from "../components/DataState";
 import { PlayerAvatar } from "../components/PlayerAvatar";
 import { PlayerLeadersModal } from "../components/PlayerLeadersModal";
@@ -67,7 +68,11 @@ export function StatsScreen() {
   );
 
   return (
-    <ScrollView bounces={false} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+    <ScrollView
+      bounces={false}
+      contentContainerStyle={[styles.scrollContent, { paddingBottom: NAV_CLEARANCE as number }]}
+      showsVerticalScrollIndicator={false}
+    >
       <View style={styles.contentShell}>
         <View style={styles.hero}>
           <Text style={styles.heroTitle}>Season Leaders</Text>
@@ -289,8 +294,7 @@ function LeaderRow({
 
 const styles = StyleSheet.create({
   scrollContent: {
-    alignItems: "center",
-    paddingBottom: 90
+    alignItems: "center"
   },
   contentShell: {
     maxWidth: 1320,

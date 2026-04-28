@@ -2,6 +2,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { useCallback, useMemo, useState } from "react";
 import { Image, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
 
+import { NAV_CLEARANCE } from "../components/AppChrome";
 import { EmptyState, ErrorState, LoadingState } from "../components/DataState";
 import { useAsyncData } from "../hooks/useAsyncData";
 import {
@@ -97,7 +98,7 @@ export function PlayoffsScreen() {
 
   return (
     <ScrollView
-      contentContainerStyle={styles.scrollContent}
+      contentContainerStyle={[styles.scrollContent, { paddingBottom: NAV_CLEARANCE as number }]}
       refreshControl={
         <RefreshControl onRefresh={handlePullRefresh} refreshing={refreshing} tintColor={colors.secondary} />
       }
@@ -559,8 +560,7 @@ function FinalsTeam({ team }: { team: NbaTeam | null }) {
 const styles = StyleSheet.create({
   scrollContent: {
     flexGrow: 1,
-    justifyContent: "center",
-    paddingBottom: 92
+    justifyContent: "center"
   },
   hero: {
     alignItems: "center",

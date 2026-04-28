@@ -1,6 +1,7 @@
 import { Fragment, useMemo, useState } from "react";
 import { Image, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
+import { NAV_CLEARANCE } from "../components/AppChrome";
 import { EmptyState, ErrorState, LoadingState } from "../components/DataState";
 import { useAsyncData } from "../hooks/useAsyncData";
 import {
@@ -64,7 +65,11 @@ export function StandingsScreen() {
   let cutoffRendered = false;
 
   return (
-    <ScrollView bounces={false} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+    <ScrollView
+      bounces={false}
+      contentContainerStyle={[styles.scrollContent, { paddingBottom: NAV_CLEARANCE as number }]}
+      showsVerticalScrollIndicator={false}
+    >
       <View style={styles.contentShell}>
         <View style={styles.hero}>
           <Text style={styles.heroTitle}>Conference Standings</Text>
@@ -192,8 +197,7 @@ function StandingTableRow({ leader, row }: { leader?: NbaStanding; row: NbaStand
 
 const styles = StyleSheet.create({
   scrollContent: {
-    alignItems: "center",
-    paddingBottom: 90
+    alignItems: "center"
   },
   contentShell: {
     maxWidth: 1120,
