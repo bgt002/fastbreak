@@ -105,11 +105,27 @@ const webTopBarSafeArea = (Platform.OS === "web"
     }
   : null) as ViewStyle | null;
 
+// On web we additionally pin the nav with `position: fixed` instead of
+// `absolute`. With `absolute`, the nav anchors to the React-root container,
+// which on iOS PWA standalone doesn't always extend to the actual viewport
+// bottom — leaving a strip of page background visible below the nav. `fixed`
+// anchors to the viewport itself, so the nav lands flush with the screen
+// bottom regardless of root height.
+//
+// `transition: none` + `transform: translateZ(0)` defend against the "nav
+// slowly creeps up on relaunch" symptom on iOS PWA: when the app reopens,
+// iOS animates env(safe-area-inset-bottom) from 0 to its final value, and
+// any default CSS transition on padding/position would animate the labels
+// upward over those few hundred ms. Forcing the nav onto its own GPU layer
+// (translateZ) and disabling transitions makes the inset apply instantly.
 const webBottomNavSafeArea = (Platform.OS === "web"
   ? {
+      position: "fixed",
       paddingBottom: "env(safe-area-inset-bottom)",
       paddingLeft: "env(safe-area-inset-left)",
-      paddingRight: "env(safe-area-inset-right)"
+      paddingRight: "env(safe-area-inset-right)",
+      transition: "none",
+      transform: [{ translateY: 0 }]
     }
   : null) as ViewStyle | null;
 

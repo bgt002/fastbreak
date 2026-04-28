@@ -1,6 +1,16 @@
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useEffect, useMemo, useState } from "react";
-import { FlatList, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import {
+  FlatList,
+  Modal,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+  type ViewStyle
+} from "react-native";
 
 import { useAsyncData } from "../hooks/useAsyncData";
 import {
@@ -162,7 +172,7 @@ export function PlayerLeadersModal({ visible, initialStat, season, seasonType, t
   return (
     <Modal animationType="slide" onRequestClose={onClose} presentationStyle="pageSheet" visible={visible}>
       <View style={styles.container}>
-        <View style={styles.header}>
+        <View style={[styles.header, webHeaderSafeArea]}>
           <Text style={styles.title}>Season Leaders</Text>
           <Pressable accessibilityLabel="Close" hitSlop={12} onPress={onClose} style={({ pressed }) => [styles.close, pressed && styles.pressed]}>
             <Ionicons color={colors.white} name="close" size={22} />
@@ -331,6 +341,15 @@ function TeamPickerModal({
     </Modal>
   );
 }
+
+// On web (incl. iOS PWA standalone) the RN Modal renders fullscreen without
+// honoring env(safe-area-inset-*), so the header would sit under the iOS
+// status bar / dynamic island and the X button becomes unclickable. Push the
+// header down by env() on web. Native iOS uses presentationStyle="pageSheet"
+// which already insets, so this is a no-op there.
+const webHeaderSafeArea = (Platform.OS === "web"
+  ? { paddingTop: "calc(env(safe-area-inset-top) + 16px)" }
+  : null) as ViewStyle | null;
 
 const styles = StyleSheet.create({
   container: {

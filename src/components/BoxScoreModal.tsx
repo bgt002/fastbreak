@@ -1,6 +1,18 @@
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Animated, Easing, Image, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import {
+  Animated,
+  Easing,
+  Image,
+  Modal,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+  type ViewStyle
+} from "react-native";
 
 import { useAsyncData } from "../hooks/useAsyncData";
 import {
@@ -107,6 +119,20 @@ const statColumns: StatColumn[] = [
 
 const tableWidth = 180 + statColumns.reduce((total, column) => total + column.width, 0);
 
+// On web (incl. iOS PWA standalone) the RN Modal renders as a fullscreen
+// overlay without honoring env(safe-area-inset-*), so the header — and the
+// absolutely-positioned X / refresh buttons inside it — would be trapped
+// under the iOS status bar / dynamic island. We push them down by env() on
+// web. Native iOS uses `presentationStyle="pageSheet"` which already insets,
+// so this is a no-op there.
+const webHeaderSafeArea = (Platform.OS === "web"
+  ? { paddingTop: "calc(env(safe-area-inset-top) + 16px)" }
+  : null) as ViewStyle | null;
+
+const webHeaderButtonSafeArea = (Platform.OS === "web"
+  ? { top: "calc(env(safe-area-inset-top) + 16px)" }
+  : null) as ViewStyle | null;
+
 export function BoxScoreModal({ game, onClose }: Props) {
   return (
     <Modal animationType="slide" onRequestClose={onClose} presentationStyle="pageSheet" visible={game !== null}>
@@ -189,7 +215,7 @@ export function BoxScoreContent({ game, onClose }: { game: NbaGame; onClose?: ()
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
+      <View style={[styles.header, webHeaderSafeArea]}>
         <Text style={[styles.headerStatus, isLive && styles.headerStatusLive]}>{getGameClockLabel(game)}</Text>
         <View style={styles.headerTeams}>
           <HeaderTeam abbreviation={game.visitor_team.abbreviation} score={game.visitor_team_score} />
@@ -201,7 +227,12 @@ export function BoxScoreContent({ game, onClose }: { game: NbaGame; onClose?: ()
           disabled={refreshing}
           hitSlop={12}
           onPress={handleRefresh}
-          style={({ pressed }) => [styles.headerButton, styles.headerButtonLeft, pressed && styles.headerButtonPressed]}
+          style={({ pressed }) => [
+            styles.headerButton,
+            styles.headerButtonLeft,
+            webHeaderButtonSafeArea,
+            pressed && styles.headerButtonPressed
+          ]}
         >
           <Animated.View style={{ transform: [{ rotate: spinDeg }] }}>
             <Ionicons color={colors.white} name="refresh-outline" size={20} />
@@ -212,7 +243,12 @@ export function BoxScoreContent({ game, onClose }: { game: NbaGame; onClose?: ()
             accessibilityLabel="Close box score"
             hitSlop={12}
             onPress={onClose}
-            style={({ pressed }) => [styles.headerButton, styles.headerButtonRight, pressed && styles.headerButtonPressed]}
+            style={({ pressed }) => [
+              styles.headerButton,
+              styles.headerButtonRight,
+              webHeaderButtonSafeArea,
+              pressed && styles.headerButtonPressed
+            ]}
           >
             <Ionicons color={colors.white} name="close" size={22} />
           </Pressable>
