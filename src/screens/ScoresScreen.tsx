@@ -1,7 +1,6 @@
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  FlatList,
   Image,
   Modal,
   type NativeScrollEvent,
@@ -143,7 +142,7 @@ export function ScoresScreen() {
 
   const [visibleWeekIndex, setVisibleWeekIndex] = useState(TODAY_WEEK_INDEX);
   const [pageWidth, setPageWidth] = useState(0);
-  const weekListRef = useRef<FlatList<Week>>(null);
+  const weekListRef = useRef<ScrollView>(null);
 
   // Jump back to today. We always scroll the week strip to today's page
   // explicitly, since the selectedDate-watching effect below is a no-op when
@@ -153,21 +152,17 @@ export function ScoresScreen() {
     setSelectedDate(today);
     setVisibleWeekIndex(TODAY_WEEK_INDEX);
     if (pageWidth > 0) {
-      weekListRef.current?.scrollToOffset({
-        offset: TODAY_WEEK_INDEX * pageWidth,
-        animated: true
-      });
+      weekListRef.current?.scrollTo({ x: TODAY_WEEK_INDEX * pageWidth, animated: true });
     }
   }, [today, pageWidth]);
 
-  // On react-native-web, FlatList's `initialScrollIndex` and any
-  // `scrollToOffset` fired from a mount-time useEffect both race the underlying
-  // ScrollView's content measurement — calls dispatched before the content is
-  // sized silently land at offset 0. The reliable signal is
-  // `onContentSizeChange`, which fires *after* the FlatList has measured its
-  // virtualized content, so a scrollToOffset queued there will stick. We still
-  // keep a useEffect fallback so subsequent re-measures (e.g., orientation
-  // change) re-snap if needed.
+  // We use a plain ScrollView (not FlatList) for the week strip because RNW's
+  // FlatList virtualization races content measurement on mount — programmatic
+  // scrollToOffset calls land at offset 0 even when fired from
+  // onContentSizeChange or RAFs. With ~105 weeks × 7 small day buttons that's
+  // well under any rendering budget anyway. We force the initial scroll on
+  // first content measurement (keyed off `pageWidth`), and the
+  // selectedDate-watching effect below handles subsequent re-pages.
   const hasForcedInitialScroll = useRef(false);
   const forceInitialScroll = useCallback(() => {
     if (hasForcedInitialScroll.current || pageWidth <= 0) return;
@@ -176,7 +171,7 @@ export function ScoresScreen() {
     if (idx < 0) return;
     hasForcedInitialScroll.current = true;
     setVisibleWeekIndex(idx);
-    weekListRef.current?.scrollToOffset({ offset: idx * pageWidth, animated: false });
+    weekListRef.current?.scrollTo({ x: idx * pageWidth, animated: false });
   }, [pageWidth, weeks, selectedDate]);
 
   useEffect(() => {
@@ -194,7 +189,7 @@ export function ScoresScreen() {
     if (idx >= 0 && idx !== visibleWeekIndex) {
       setVisibleWeekIndex(idx);
       if (pageWidth > 0) {
-        weekListRef.current?.scrollToOffset({ offset: idx * pageWidth, animated: true });
+        weekListRef.current?.scrollTo({ x: idx * pageWidth, animated: true });
       }
     }
     // We only want to re-page when selectedDate changes, not when the index is
@@ -284,24 +279,18 @@ export function ScoresScreen() {
           style={styles.weekViewport}
         >
           {pageWidth > 0 ? (
-            <FlatList
+            <ScrollView
               ref={weekListRef}
-              data={weeks}
               decelerationRate="fast"
-              getItemLayout={(_, idx) => ({
-                length: pageWidth,
-                offset: pageWidth * idx,
-                index: idx
-              })}
               horizontal
-              keyExtractor={(week) => week.id}
               onContentSizeChange={forceInitialScroll}
               onScroll={handleWeekScroll}
               pagingEnabled
               scrollEventThrottle={16}
               showsHorizontalScrollIndicator={false}
-              renderItem={({ item: week }) => (
-                <View style={[styles.weekPage, { width: pageWidth }]}>
+            >
+              {weeks.map((week) => (
+                <View key={week.id} style={[styles.weekPage, { width: pageWidth }]}>
                   {week.days.map((d) => {
                     const active = selectedDate === d.id;
                     return (
@@ -325,8 +314,8 @@ export function ScoresScreen() {
                     );
                   })}
                 </View>
-              )}
-            />
+              ))}
+            </ScrollView>
           ) : null}
         </View>
 
