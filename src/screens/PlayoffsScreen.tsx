@@ -153,8 +153,8 @@ async function loadPlayoffData(): Promise<PlayoffData> {
     getUpcomingPlayoffGames(season).catch((): NbaUpcomingPlayoffGame[] => [])
   ]);
 
-  const seedByTeamId = new Map<number, number>();
-  standings.forEach((s) => seedByTeamId.set(s.team.id, s.conference_rank));
+  const confRankByTeamId = new Map<number, number>();
+  standings.forEach((s) => confRankByTeamId.set(s.team.id, s.conference_rank));
 
   const nextGameByPair = buildNextGameMap(upcoming);
 
@@ -169,17 +169,31 @@ async function loadPlayoffData(): Promise<PlayoffData> {
     .sort((a, b) => a.earliestDate - b.earliestDate);
   const finalsSeries = seriesList.find((s) => s.bucket === "Finals") ?? null;
 
-  const westR1 = padRound(westSeries.filter((s) => rounds.get(s.id) === 1), 4);
-  const westSemisRaw = padRound(westSeries.filter((s) => rounds.get(s.id) === 2), 2);
+  // Derive actual playoff seeds rather than using regular-season conference
+  // rank directly — conference_rank doesn't reflect play-in results, where
+  // the 7/8 seeds get reshuffled (e.g. POR finishing reg-season #8 but
+  // becoming the #7 playoff seed by winning the play-in). The top 6 are
+  // never affected by play-in, and the bracket pairings always sum to 9
+  // (1v8, 2v7, 3v6, 4v5), so we can infer seeds 7/8 from R1 matchups.
+  const r1ForSeedDerivation = [
+    ...westSeries.filter((s) => rounds.get(s.id) === 1),
+    ...eastSeries.filter((s) => rounds.get(s.id) === 1)
+  ];
+  const seedByTeamId = derivePlayoffSeeds(r1ForSeedDerivation, confRankByTeamId);
+
+  const westR1 = orderR1BySeed(westSeries.filter((s) => rounds.get(s.id) === 1), seedByTeamId);
+  const westSemisRaw = orderSemisBySeed(westSeries.filter((s) => rounds.get(s.id) === 2), seedByTeamId);
   const westCfRaw = padRound(westSeries.filter((s) => rounds.get(s.id) === 3), 1);
-  const eastR1 = padRound(eastSeries.filter((s) => rounds.get(s.id) === 1), 4);
-  const eastSemisRaw = padRound(eastSeries.filter((s) => rounds.get(s.id) === 2), 2);
+  const eastR1 = orderR1BySeed(eastSeries.filter((s) => rounds.get(s.id) === 1), seedByTeamId);
+  const eastSemisRaw = orderSemisBySeed(eastSeries.filter((s) => rounds.get(s.id) === 2), seedByTeamId);
   const eastCfRaw = padRound(eastSeries.filter((s) => rounds.get(s.id) === 3), 1);
 
-  // Pair up feeder series so a winner from R1 can be projected into the
-  // corresponding Semis slot, etc. Pairing uses chronological order, which
-  // doesn't always match NBA's seeding bracket but produces a sensible
-  // visualization with the data we have.
+  // Standard NBA bracket: R1 ordering [1v8, 4v5, 3v6, 2v7] feeds semis as
+  // (1v8 winner) vs (4v5 winner) and (2v7 winner) vs (3v6 winner). Semis
+  // ordering matches: westSemis[0] is the 1/4-side, westSemis[1] is the 2/3-side.
+  // Seed-based ordering above keeps these pairings correct so e.g. OKC (1)
+  // can never get projected against SAS (a 2/3-side team) until the
+  // conference finals.
   const westSemis = [
     project(westR1[0], westR1[1], westSemisRaw[0]),
     project(westR1[2], westR1[3], westSemisRaw[1])
@@ -238,6 +252,121 @@ function padRound(series: PlayoffSeries[], targetSize: number): (PlayoffSeries |
     padded.push(null);
   }
   return padded.slice(0, targetSize);
+}
+
+// Build a map of teamId → playoff seed (1-8). The NBA's regular-season
+// conference rank doesn't always match the playoff seed because of the
+// play-in tournament: the team that finished #7 in the regular season can
+// drop to playoff seed 8 (or out entirely) if they lose the 7v8 play-in.
+//
+// We use two facts to derive the post-play-in seeds:
+//   1. Seeds 1-6 are guaranteed playoff teams whose playoff seed equals
+//      their conference rank (play-in only affects 7-10).
+//   2. R1 matchups always sum to 9: 1v8, 2v7, 3v6, 4v5. So once we know
+//      one team in a series has playoff seed N (because we anchored from
+//      conf_rank 1-6), the opponent must have playoff seed 9-N — even if
+//      their conf_rank says otherwise.
+function derivePlayoffSeeds(
+  r1Series: PlayoffSeries[],
+  confRankByTeamId: Map<number, number>
+): Map<number, number> {
+  const seeds = new Map<number, number>();
+  for (const [teamId, rank] of confRankByTeamId) {
+    if (rank >= 1 && rank <= 6) seeds.set(teamId, rank);
+  }
+  for (const s of r1Series) {
+    const aRank = confRankByTeamId.get(s.teamA.id);
+    const bRank = confRankByTeamId.get(s.teamB.id);
+    let anchor: number | null = null;
+    let opponentId: number | null = null;
+    if (aRank != null && aRank >= 1 && aRank <= 6) {
+      anchor = aRank;
+      opponentId = s.teamB.id;
+    } else if (bRank != null && bRank >= 1 && bRank <= 6) {
+      anchor = bRank;
+      opponentId = s.teamA.id;
+    }
+    if (anchor != null && opponentId != null) {
+      seeds.set(opponentId, 9 - anchor);
+    }
+  }
+  return seeds;
+}
+
+// Real NBA bracket structure (per conference):
+//   side A (top half):    seeds {1, 4, 5, 8}  →  R1 slots 0 (1v8) and 1 (4v5)
+//   side B (bottom half): seeds {2, 3, 6, 7}  →  R1 slots 2 (3v6) and 3 (2v7)
+// (Play-in shuffles 7/8 vs 9/10 but the resulting playoff seed still falls
+// into the right side, and we use conference_rank as a stand-in for seed.)
+const R1_SLOT_BY_SEED: Record<number, number> = {
+  1: 0, 8: 0,
+  4: 1, 5: 1,
+  3: 2, 6: 2,
+  2: 3, 7: 3
+};
+const SEMIS_SIDE_BY_SEED: Record<number, 0 | 1> = {
+  1: 0, 4: 0, 5: 0, 8: 0,
+  2: 1, 3: 1, 6: 1, 7: 1
+};
+
+function r1Slot(s: PlayoffSeries, seeds: Map<number, number>): number | null {
+  for (const id of [s.teamA.id, s.teamB.id]) {
+    const seed = seeds.get(id);
+    if (seed != null && R1_SLOT_BY_SEED[seed] != null) return R1_SLOT_BY_SEED[seed];
+  }
+  return null;
+}
+
+function semisSide(s: PlayoffSeries, seeds: Map<number, number>): 0 | 1 | null {
+  for (const id of [s.teamA.id, s.teamB.id]) {
+    const seed = seeds.get(id);
+    if (seed != null && SEMIS_SIDE_BY_SEED[seed] != null) return SEMIS_SIDE_BY_SEED[seed];
+  }
+  return null;
+}
+
+// Place each R1 series into its bracket slot (0=1v8, 1=4v5, 2=3v6, 3=2v7).
+// Series with unknown seeds (e.g., when the standings call failed) fill any
+// remaining slots in chronological order so the UI still has something to
+// show.
+function orderR1BySeed(series: PlayoffSeries[], seeds: Map<number, number>): (PlayoffSeries | null)[] {
+  const slots: (PlayoffSeries | null)[] = [null, null, null, null];
+  const leftovers: PlayoffSeries[] = [];
+  for (const s of series) {
+    const slot = r1Slot(s, seeds);
+    if (slot != null && slots[slot] == null) {
+      slots[slot] = s;
+    } else {
+      leftovers.push(s);
+    }
+  }
+  leftovers.sort((a, b) => a.earliestDate - b.earliestDate);
+  for (const s of leftovers) {
+    const idx = slots.indexOf(null);
+    if (idx >= 0) slots[idx] = s;
+  }
+  return slots;
+}
+
+// Place each semis series into its bracket side (0=top half / 1v4, 1=bottom
+// half / 2v3) by looking at the seeds of the participating teams.
+function orderSemisBySeed(series: PlayoffSeries[], seeds: Map<number, number>): (PlayoffSeries | null)[] {
+  const slots: (PlayoffSeries | null)[] = [null, null];
+  const leftovers: PlayoffSeries[] = [];
+  for (const s of series) {
+    const side = semisSide(s, seeds);
+    if (side != null && slots[side] == null) {
+      slots[side] = s;
+    } else {
+      leftovers.push(s);
+    }
+  }
+  leftovers.sort((a, b) => a.earliestDate - b.earliestDate);
+  for (const s of leftovers) {
+    const idx = slots.indexOf(null);
+    if (idx >= 0) slots[idx] = s;
+  }
+  return slots;
 }
 
 function toSeriesSlot(series: PlayoffSeries | null): BracketSlot {
@@ -394,8 +523,7 @@ function MatchupCard({
   if (slot.type === "series") {
     const { series } = slot;
     const status = getSeriesStatusLabel(series);
-    const seedA = seedByTeamId.get(series.teamA.id) ?? null;
-    const seedB = seedByTeamId.get(series.teamB.id) ?? null;
+    const { top, bottom } = orderedSeriesTeams(series, seedByTeamId);
     const nextGame = !series.winner
       ? nextGameByPair.get(abbrPairKey(series.teamA.abbreviation, series.teamB.abbreviation)) ?? null
       : null;
@@ -404,30 +532,68 @@ function MatchupCard({
         {status ? <Text style={styles.matchupStatus}>{status}</Text> : null}
         <SeriesRow
           isFirst
-          score={series.scoreA}
-          team={series.teamA}
-          winner={series.winner === "A"}
-          seed={seedA}
+          score={top.score}
+          team={top.team}
+          winner={top.won}
+          seed={top.seed}
         />
         <SeriesRow
-          score={series.scoreB}
-          team={series.teamB}
-          winner={series.winner === "B"}
-          seed={seedB}
+          score={bottom.score}
+          team={bottom.team}
+          winner={bottom.won}
+          seed={bottom.seed}
         />
         {nextGame ? <NextGameFooter game={nextGame} /> : null}
       </View>
     );
   }
 
-  const seedA = slot.teamA ? seedByTeamId.get(slot.teamA.id) ?? null : null;
-  const seedB = slot.teamB ? seedByTeamId.get(slot.teamB.id) ?? null : null;
+  const [top, bottom] = orderedPreviewTeams(slot, seedByTeamId);
   return (
     <View style={styles.matchupCard}>
-      <PreviewRow isFirst team={slot.teamA} seed={seedA} />
-      <PreviewRow team={slot.teamB} seed={seedB} />
+      <PreviewRow isFirst team={top.team} seed={top.seed} />
+      <PreviewRow team={bottom.team} seed={bottom.seed} />
     </View>
   );
+}
+
+// Order the two teams in a matchup so the higher seed (lower numeric value)
+// renders on top — both for live series and for projected previews. Falls
+// back to the original A/B order when neither team has a known seed.
+function orderedSeriesTeams(series: PlayoffSeries, seeds: Map<number, number>) {
+  const seedA = seeds.get(series.teamA.id) ?? null;
+  const seedB = seeds.get(series.teamB.id) ?? null;
+  const aFirst = (seedA ?? Infinity) <= (seedB ?? Infinity);
+  const teamARecord = {
+    team: series.teamA,
+    score: series.scoreA,
+    won: series.winner === "A",
+    seed: seedA
+  };
+  const teamBRecord = {
+    team: series.teamB,
+    score: series.scoreB,
+    won: series.winner === "B",
+    seed: seedB
+  };
+  return aFirst
+    ? { top: teamARecord, bottom: teamBRecord }
+    : { top: teamBRecord, bottom: teamARecord };
+}
+
+function orderedPreviewTeams(
+  slot: { teamA: NbaTeam | null; teamB: NbaTeam | null },
+  seeds: Map<number, number>
+): [
+  { team: NbaTeam | null; seed: number | null },
+  { team: NbaTeam | null; seed: number | null }
+] {
+  const seedA = slot.teamA ? seeds.get(slot.teamA.id) ?? null : null;
+  const seedB = slot.teamB ? seeds.get(slot.teamB.id) ?? null : null;
+  const aFirst = (seedA ?? Infinity) <= (seedB ?? Infinity);
+  const a = { team: slot.teamA, seed: seedA };
+  const b = { team: slot.teamB, seed: seedB };
+  return aFirst ? [a, b] : [b, a];
 }
 
 function SeriesRow({
