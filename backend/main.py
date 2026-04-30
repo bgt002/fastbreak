@@ -117,6 +117,10 @@ def list_games(date: str = Query(..., description="YYYY-MM-DD")):
         # so always overlay the live feed — matched games get their actual score
         # and clock; everything else is left as-is.
         _apply_live_overlay(past_games)
+        # Backfill playoff metadata (series_label, game_number, if_necessary)
+        # so completed postseason games still surface their round/game header
+        # when the user navigates back to past dates.
+        _apply_espn_tipoffs(past_games, parsed)
         return {"data": past_games}
 
     sb = _call_nba(
