@@ -5,6 +5,9 @@ import {
   Easing,
   Image,
   Modal,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
+  PanResponder,
   Platform,
   Pressable,
   ScrollView,
@@ -95,9 +98,9 @@ function computeTotals(players: NbaBoxScorePlayer[]): TeamTotals {
 }
 
 // Column order: MIN, then PTS / REB / AST / STL / BLK / TOV (headline counting
-// stats), then PF, then shooting splits with attempts before makes (FGA, FGM,
-// FG%, 3PA, 3PM, 3P%, FTA, FTM, FT%), then offensive/defensive boards, then
-// +/-.
+// stats), then PF, then shooting splits in the conventional NBA order
+// (made-attempted-pct, e.g. "8/15"): FGM, FGA, FG%, 3PM, 3PA, 3P%, FTM, FTA,
+// FT%. Offensive/defensive boards last, then +/-.
 const statColumns: StatColumn[] = [
   { label: "MIN", width: 44, player: playerMinutes, total: () => "" },
   { label: "PTS", width: 36, player: (p) => String(p.points), total: (t) => String(t.points) },
@@ -107,14 +110,14 @@ const statColumns: StatColumn[] = [
   { label: "BLK", width: 36, player: (p) => String(p.blocks), total: (t) => String(t.blocks) },
   { label: "TOV", width: 36, player: (p) => String(p.turnovers), total: (t) => String(t.turnovers) },
   { label: "PF", width: 32, player: (p) => String(p.fouls), total: (t) => String(t.fouls) },
-  { label: "FGA", width: 36, player: (p) => String(p.fga), total: (t) => String(t.fga) },
   { label: "FGM", width: 36, player: (p) => String(p.fgm), total: (t) => String(t.fgm) },
+  { label: "FGA", width: 36, player: (p) => String(p.fga), total: (t) => String(t.fga) },
   { label: "FG%", width: 48, player: (p) => pct(p.fgm, p.fga), total: (t) => pct(t.fgm, t.fga) },
-  { label: "3PA", width: 36, player: (p) => String(p.fg3a), total: (t) => String(t.fg3a) },
   { label: "3PM", width: 36, player: (p) => String(p.fg3m), total: (t) => String(t.fg3m) },
+  { label: "3PA", width: 36, player: (p) => String(p.fg3a), total: (t) => String(t.fg3a) },
   { label: "3P%", width: 48, player: (p) => pct(p.fg3m, p.fg3a), total: (t) => pct(t.fg3m, t.fg3a) },
-  { label: "FTA", width: 36, player: (p) => String(p.fta), total: (t) => String(t.fta) },
   { label: "FTM", width: 36, player: (p) => String(p.ftm), total: (t) => String(t.ftm) },
+  { label: "FTA", width: 36, player: (p) => String(p.fta), total: (t) => String(t.fta) },
   { label: "FT%", width: 48, player: (p) => pct(p.ftm, p.fta), total: (t) => pct(t.ftm, t.fta) },
   { label: "OREB", width: 44, player: (p) => String(p.oreb), total: (t) => String(t.oreb) },
   { label: "DREB", width: 44, player: (p) => String(p.dreb), total: (t) => String(t.dreb) },
@@ -182,15 +185,18 @@ export function BoxScoreContent({ game, onClose }: { game: NbaGame; onClose?: ()
   useEffect(() => {
     if (!refreshing) {
       spin.stopAnimation();
+      spin.setValue(0);
       return;
     }
     spin.setValue(0);
+    // useNativeDriver: false so the rotation works on react-native-web (PWA);
+    // the native driver has spotty support for transform rotates on RNW.
     const loop = Animated.loop(
       Animated.timing(spin, {
         toValue: 1,
         duration: 700,
         easing: Easing.linear,
-        useNativeDriver: true
+        useNativeDriver: false
       })
     );
     loop.start();
@@ -199,8 +205,11 @@ export function BoxScoreContent({ game, onClose }: { game: NbaGame; onClose?: ()
   const handleRefresh = useCallback(async () => {
     if (refreshing) return;
     setRefreshing(true);
+    // Minimum spin duration so a fast network response still gives visible
+    // feedback — without this, the spinner blinks for ~50ms and looks dead.
+    const minSpin = new Promise((resolve) => setTimeout(resolve, 600));
     try {
-      await silentReload();
+      await Promise.all([silentReload(), minSpin]);
     } finally {
       setRefreshing(false);
     }
@@ -211,6 +220,59 @@ export function BoxScoreContent({ game, onClose }: { game: NbaGame; onClose?: ()
   const [selectedTeamId, setSelectedTeamId] = useState<number | null>(null);
   const activeTeamId = selectedTeamId ?? orderedTeams[0]?.team.id ?? null;
   const activeTeam = orderedTeams.find((t) => t.team.id === activeTeamId) ?? orderedTeams[0];
+
+  // Swipe-down-to-close. Only enabled on web (iOS native pageSheet already
+  // ships with this gesture). The responder activates only when the inner
+  // ScrollView is at scroll-top — otherwise downward drags scroll the table
+  // as expected.
+  const scrollYRef = useRef(0);
+  const panY = useRef(new Animated.Value(0)).current;
+  const closingRef = useRef(false);
+  const swipeDownEnabled = Platform.OS === "web" && Boolean(onClose);
+  const closePan = useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponder: (_, g) => {
+          if (!swipeDownEnabled || closingRef.current) return false;
+          if (scrollYRef.current > 0) return false;
+          return g.dy > 14 && Math.abs(g.dy) > Math.abs(g.dx) * 1.5;
+        },
+        onPanResponderTerminationRequest: () => false,
+        onPanResponderMove: (_, g) => {
+          if (g.dy > 0) panY.setValue(g.dy);
+        },
+        onPanResponderRelease: (_, g) => {
+          if (g.dy > 100) {
+            closingRef.current = true;
+            Animated.timing(panY, {
+              toValue: 800,
+              duration: 200,
+              useNativeDriver: false
+            }).start(() => {
+              onClose?.();
+              // Reset for next open
+              panY.setValue(0);
+              closingRef.current = false;
+            });
+          } else {
+            Animated.spring(panY, {
+              toValue: 0,
+              useNativeDriver: false,
+              speed: 18,
+              bounciness: 4
+            }).start();
+          }
+        },
+        onPanResponderTerminate: () => {
+          Animated.spring(panY, { toValue: 0, useNativeDriver: false, speed: 18 }).start();
+        }
+      }),
+    [swipeDownEnabled, panY, onClose]
+  );
+
+  const handleScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    scrollYRef.current = e.nativeEvent.contentOffset.y;
+  }, []);
 
   // Mirror the body's horizontal scroll onto the sticky stat header so the
   // pinned column labels stay aligned with the columns scrolled below them.
@@ -230,7 +292,7 @@ export function BoxScoreContent({ game, onClose }: { game: NbaGame; onClose?: ()
   }, [activeTeamId, horizontalScrollX]);
 
   return (
-    <View style={styles.container}>
+    <Animated.View style={[styles.container, { transform: [{ translateY: panY }] }]}>
       <View style={[styles.header, webHeaderSafeArea]}>
         <Text style={[styles.headerStatus, isLive && styles.headerStatusLive]}>{getGameClockLabel(game)}</Text>
         <View style={styles.headerTeams}>
@@ -271,34 +333,38 @@ export function BoxScoreContent({ game, onClose }: { game: NbaGame; onClose?: ()
         ) : null}
       </View>
 
-      {isUpcoming ? (
-        <EmptyState message="Game has not started yet" title="No Box Score" />
-      ) : (
-        <>
-          {loading ? <LoadingState label="Loading box score" /> : null}
-          {error ? <ErrorState error={error} onRetry={reload} /> : null}
+      <View {...closePan.panHandlers} style={styles.body}>
+        {isUpcoming ? (
+          <EmptyState message="Game has not started yet" title="No Box Score" />
+        ) : (
+          <>
+            {loading ? <LoadingState label="Loading box score" /> : null}
+            {error ? <ErrorState error={error} onRetry={reload} /> : null}
 
-          {data ? (
-            <ScrollView
-              contentContainerStyle={styles.scrollContent}
-              showsVerticalScrollIndicator={false}
-              stickyHeaderIndices={activeTeam ? [1] : []}
-            >
-              <LineScoreTable teams={orderedTeams} game={game} />
-              <View style={styles.stickyBlock}>
-                <TeamToggle
-                  teams={orderedTeams}
-                  selectedTeamId={activeTeam?.team.id ?? null}
-                  onSelect={setSelectedTeamId}
-                />
-                {activeTeam ? <TableStickyHeader scrollRef={stickyHeaderScrollRef} /> : null}
-              </View>
-              {activeTeam ? <TableBody team={activeTeam} scrollX={horizontalScrollX} showOnCourt={isLive} /> : null}
-            </ScrollView>
-          ) : null}
-        </>
-      )}
-    </View>
+            {data ? (
+              <ScrollView
+                contentContainerStyle={styles.scrollContent}
+                onScroll={handleScroll}
+                scrollEventThrottle={16}
+                showsVerticalScrollIndicator={false}
+                stickyHeaderIndices={activeTeam ? [1] : []}
+              >
+                <LineScoreTable teams={orderedTeams} game={game} />
+                <View style={styles.stickyBlock}>
+                  <TeamToggle
+                    teams={orderedTeams}
+                    selectedTeamId={activeTeam?.team.id ?? null}
+                    onSelect={setSelectedTeamId}
+                  />
+                  {activeTeam ? <TableStickyHeader scrollRef={stickyHeaderScrollRef} /> : null}
+                </View>
+                {activeTeam ? <TableBody team={activeTeam} scrollX={horizontalScrollX} showOnCourt={isLive} /> : null}
+              </ScrollView>
+            ) : null}
+          </>
+        )}
+      </View>
+    </Animated.View>
   );
 }
 
@@ -510,6 +576,9 @@ function TotalsRow({ totals }: { totals: TeamTotals }) {
 const styles = StyleSheet.create({
   container: {
     backgroundColor: colors.background,
+    flex: 1
+  },
+  body: {
     flex: 1
   },
   header: {

@@ -1,11 +1,14 @@
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  ActivityIndicator,
+  Animated,
   Image,
   Modal,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
   PanResponder,
+  Platform,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -118,6 +121,68 @@ export function ScoresScreen() {
     setRefreshing(false);
   }, [silentReload]);
 
+  // Web pull-to-refresh. RefreshControl is a no-op on react-native-web, so we
+  // implement the gesture ourselves. Activates only when the outer ScrollView
+  // is at scroll-top and the user drags down — otherwise normal vertical
+  // scrolling is preserved.
+  const PULL_THRESHOLD = 70;
+  const scrollYRef = useRef(0);
+  const pullY = useRef(new Animated.Value(0)).current;
+  const pullingRef = useRef(false);
+  const handleScrollY = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    scrollYRef.current = e.nativeEvent.contentOffset.y;
+  }, []);
+  const refreshPan = useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponder: (_, g) => {
+          if (Platform.OS !== "web") return false;
+          if (refreshing || pullingRef.current) return false;
+          if (scrollYRef.current > 0) return false;
+          return g.dy > 8 && Math.abs(g.dy) > Math.abs(g.dx) * 1.5;
+        },
+        onPanResponderTerminationRequest: () => false,
+        onPanResponderGrant: () => {
+          pullingRef.current = true;
+        },
+        onPanResponderMove: (_, g) => {
+          if (g.dy > 0) {
+            // Resistance: easing makes the pull feel anchored instead of linear.
+            pullY.setValue(Math.min(140, g.dy * 0.6));
+          }
+        },
+        onPanResponderRelease: async (_, g) => {
+          pullingRef.current = false;
+          if (g.dy > PULL_THRESHOLD * 1.5) {
+            Animated.spring(pullY, {
+              toValue: PULL_THRESHOLD,
+              useNativeDriver: false,
+              speed: 18,
+              bounciness: 4
+            }).start();
+            await handlePullRefresh();
+            Animated.timing(pullY, {
+              toValue: 0,
+              duration: 220,
+              useNativeDriver: false
+            }).start();
+          } else {
+            Animated.spring(pullY, {
+              toValue: 0,
+              useNativeDriver: false,
+              speed: 18,
+              bounciness: 4
+            }).start();
+          }
+        },
+        onPanResponderTerminate: () => {
+          pullingRef.current = false;
+          Animated.spring(pullY, { toValue: 0, useNativeDriver: false, speed: 18 }).start();
+        }
+      }),
+    [pullY, refreshing, handlePullRefresh]
+  );
+
   // Fixed range of paged weeks centered on today. The list itself never
   // re-orders, so paging stays smooth; the user pages through real time.
   const weeks = useMemo<Week[]>(() => {
@@ -229,31 +294,101 @@ export function ScoresScreen() {
     setCalendarOpen(false);
   }, []);
 
-  // Horizontal swipe on the games area moves the selected date by ±1 day.
-  // Threshold checks ensure we don't hijack vertical scroll or pull-to-refresh.
+  // Horizontal swipe → slide the games column with the finger, then animate
+  // off-screen on release past threshold and slide the new date in from the
+  // opposite side. The threshold checks prevent us from hijacking vertical
+  // scroll or pull-to-refresh.
+  const dragX = useRef(new Animated.Value(0)).current;
+  const animatingRef = useRef(false);
   const swipeResponder = useMemo(
     () =>
       PanResponder.create({
         onMoveShouldSetPanResponder: (_, g) =>
-          Math.abs(g.dx) > 14 && Math.abs(g.dx) > Math.abs(g.dy) * 1.5,
+          !animatingRef.current &&
+          Math.abs(g.dx) > 14 &&
+          Math.abs(g.dx) > Math.abs(g.dy) * 1.5,
         onPanResponderTerminationRequest: () => false,
+        onPanResponderMove: (_, g) => {
+          const max = pageWidth || 400;
+          const clamped = Math.max(-max, Math.min(max, g.dx));
+          dragX.setValue(clamped);
+        },
         onPanResponderRelease: (_, g) => {
-          if (Math.abs(g.dx) < 60) return;
-          setSelectedDate((prev) => shiftDate(prev, g.dx < 0 ? 1 : -1));
+          const width = pageWidth || 400;
+          const threshold = 60;
+          if (Math.abs(g.dx) >= threshold) {
+            const direction = g.dx < 0 ? 1 : -1;
+            animatingRef.current = true;
+            Animated.timing(dragX, {
+              toValue: direction > 0 ? -width : width,
+              duration: 180,
+              useNativeDriver: false
+            }).start(() => {
+              setSelectedDate((prev) => shiftDate(prev, direction));
+              dragX.setValue(direction > 0 ? width : -width);
+              Animated.timing(dragX, {
+                toValue: 0,
+                duration: 200,
+                useNativeDriver: false
+              }).start(() => {
+                animatingRef.current = false;
+              });
+            });
+          } else {
+            Animated.spring(dragX, {
+              toValue: 0,
+              useNativeDriver: false,
+              speed: 18,
+              bounciness: 4
+            }).start();
+          }
+        },
+        onPanResponderTerminate: () => {
+          Animated.spring(dragX, { toValue: 0, useNativeDriver: false, speed: 18 }).start();
         }
       }),
-    []
+    [dragX, pageWidth]
   );
 
   return (
     <ScrollView
       contentContainerStyle={[styles.scrollContent, { paddingBottom: NAV_CLEARANCE as number }]}
+      onScroll={Platform.OS === "web" ? handleScrollY : undefined}
+      scrollEventThrottle={16}
       showsVerticalScrollIndicator={false}
       refreshControl={
-        <RefreshControl refreshing={refreshing} onRefresh={handlePullRefresh} tintColor={colors.secondary} />
+        Platform.OS === "web" ? undefined : (
+          <RefreshControl refreshing={refreshing} onRefresh={handlePullRefresh} tintColor={colors.secondary} />
+        )
       }
     >
-      <View style={styles.contentShell}>
+      {Platform.OS === "web" ? (
+        <Animated.View
+          pointerEvents="none"
+          style={[
+            styles.pullIndicator,
+            {
+              opacity: pullY.interpolate({
+                inputRange: [0, PULL_THRESHOLD],
+                outputRange: [0, 1],
+                extrapolate: "clamp"
+              }),
+              transform: [
+                {
+                  translateY: pullY.interpolate({
+                    inputRange: [0, PULL_THRESHOLD * 1.6],
+                    outputRange: [-40, 28],
+                    extrapolate: "clamp"
+                  })
+                }
+              ]
+            }
+          ]}
+        >
+          <ActivityIndicator color={colors.secondary} />
+        </Animated.View>
+      ) : null}
+      <View {...(Platform.OS === "web" ? refreshPan.panHandlers : {})} style={styles.contentShell}>
         <View style={styles.monthRow}>
           <Text style={styles.monthLabel}>{monthLabel}</Text>
           <View style={styles.monthActions}>
@@ -319,18 +454,21 @@ export function ScoresScreen() {
           ) : null}
         </View>
 
-        <View style={styles.sectionHeader}>
-          <View style={styles.sectionTitleRow}>
-            <View style={styles.liveDot} />
-            <Text style={styles.sectionTitle}>NBA Games</Text>
+        <Animated.View
+          {...swipeResponder.panHandlers}
+          style={{ transform: [{ translateX: dragX }] }}
+        >
+          <View style={styles.sectionHeader}>
+            <View style={styles.sectionTitleRow}>
+              <View style={styles.liveDot} />
+              <Text style={styles.sectionTitle}>NBA Games</Text>
+            </View>
+            <View style={styles.localTimeNotice}>
+              <Ionicons color="#7D8490" name="time-outline" size={11} />
+              <Text style={styles.localTimeNoticeText}>Times shown in local time</Text>
+            </View>
           </View>
-          <View style={styles.localTimeNotice}>
-            <Ionicons color="#7D8490" name="time-outline" size={11} />
-            <Text style={styles.localTimeNoticeText}>Times shown in local time</Text>
-          </View>
-        </View>
 
-        <View {...swipeResponder.panHandlers}>
           {loading ? <LoadingState /> : null}
           {error ? <ErrorState error={error} onRetry={reload} /> : null}
           {!loading && !error && visibleGames?.length === 0 ? (
@@ -350,7 +488,7 @@ export function ScoresScreen() {
               ))}
             </View>
           ) : null}
-        </View>
+        </Animated.View>
       </View>
       <BoxScoreModal game={openGame} onClose={() => setOpenGame(null)} />
       <CalendarModal
@@ -612,6 +750,15 @@ const styles = StyleSheet.create({
     maxWidth: 768,
     paddingHorizontal: spacing.gutter,
     width: "100%"
+  },
+  pullIndicator: {
+    alignSelf: "center",
+    left: 0,
+    position: "absolute",
+    right: 0,
+    top: 0,
+    alignItems: "center",
+    zIndex: 5
   },
   monthRow: {
     alignItems: "center",
