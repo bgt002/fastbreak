@@ -106,6 +106,15 @@ export function ScoresScreen() {
     });
   }, [games, seriesByPair]);
 
+  // The modal captures the game at click time; we rebind it to the latest
+  // version from `games` whenever polling brings new data so live scores,
+  // status, and clock stay fresh in the header. Falls back to the captured
+  // snapshot if the user navigates to a date that doesn't contain this game.
+  const displayedGame = useMemo(() => {
+    if (!openGame || !games) return openGame;
+    return games.find((g) => g.id === openGame.id) ?? openGame;
+  }, [openGame, games]);
+
   const hasLiveGame = games?.some((game) => getGameState(game) === "live") ?? false;
   useEffect(() => {
     if (selectedDate !== today || !hasLiveGame) {
@@ -490,7 +499,7 @@ export function ScoresScreen() {
           ) : null}
         </Animated.View>
       </View>
-      <BoxScoreModal game={openGame} onClose={() => setOpenGame(null)} />
+      <BoxScoreModal game={displayedGame} onClose={() => setOpenGame(null)} />
       <CalendarModal
         visible={calendarOpen}
         selectedDate={selectedDate}

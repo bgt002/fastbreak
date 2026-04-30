@@ -221,6 +221,14 @@ export function BoxScoreContent({ game, onClose }: { game: NbaGame; onClose?: ()
   const activeTeamId = selectedTeamId ?? orderedTeams[0]?.team.id ?? null;
   const activeTeam = orderedTeams.find((t) => t.team.id === activeTeamId) ?? orderedTeams[0];
 
+  // Prefer scores from the polled box-score response — it refreshes every 5s
+  // during a live game, so the header stays in sync between scoreboard polls.
+  // Falls back to the (slower-cadence) game prop until box-score data lands.
+  const liveVisitorScore =
+    data?.teams.find((t) => t.team.id === game.visitor_team.id)?.score ?? game.visitor_team_score;
+  const liveHomeScore =
+    data?.teams.find((t) => t.team.id === game.home_team.id)?.score ?? game.home_team_score;
+
   // Swipe-down-to-close. Only enabled on web (iOS native pageSheet already
   // ships with this gesture). The responder activates only when the inner
   // ScrollView is at scroll-top — otherwise downward drags scroll the table
@@ -296,9 +304,9 @@ export function BoxScoreContent({ game, onClose }: { game: NbaGame; onClose?: ()
       <View style={[styles.header, webHeaderSafeArea]}>
         <Text style={[styles.headerStatus, isLive && styles.headerStatusLive]}>{getGameClockLabel(game)}</Text>
         <View style={styles.headerTeams}>
-          <HeaderTeam abbreviation={game.visitor_team.abbreviation} score={game.visitor_team_score} />
+          <HeaderTeam abbreviation={game.visitor_team.abbreviation} score={liveVisitorScore} />
           <Text style={styles.headerSeparator}>@</Text>
-          <HeaderTeam abbreviation={game.home_team.abbreviation} score={game.home_team_score} />
+          <HeaderTeam abbreviation={game.home_team.abbreviation} score={liveHomeScore} />
         </View>
         <Pressable
           accessibilityLabel="Refresh box score"

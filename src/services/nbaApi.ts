@@ -510,7 +510,10 @@ async function request<T>(path: string, params: Record<string, QueryValue> = {})
 
   let response: Response;
   try {
-    response = await fetch(url, { headers: { Accept: "application/json" } });
+    // cache: "no-store" so live endpoints (/games, /boxscore) always hit the
+    // backend and aren't served stale from the browser HTTP cache. We have
+    // our own withCache layer for endpoints that benefit from caching.
+    response = await fetch(url, { headers: { Accept: "application/json" }, cache: "no-store" });
   } catch (err) {
     throw new NbaApiError(
       `Could not reach the NBA API backend at ${baseUrl}. Is the FastAPI server running and reachable from this device?`
