@@ -1004,6 +1004,14 @@ def list_playoff_games(season: int = Query(..., description="Starting year, e.g.
         if not game_id:
             continue
 
+        # LeagueGameLog includes rows for live and (sometimes) scheduled games
+        # whose WL field is still blank. Counting those as "Final" inflates
+        # series win totals — e.g., a live Game 4 with the leader at +1
+        # propagates into the bracket as a series-clinching win. Only consider
+        # rows that have an actual W/L recorded.
+        if not (row.get("WL") or "").strip():
+            continue
+
         team_id = row.get("TEAM_ID")
         team_meta = _TEAM_LOOKUP.get(team_id)
         if not team_meta:

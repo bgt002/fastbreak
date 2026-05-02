@@ -427,6 +427,12 @@ function aggregateSeries(games: NbaGame[]): PlayoffSeries[] {
     }
 
     if (getGameState(game) === "final") {
+      // Defense in depth: a real completed playoff game cannot end tied or
+      // 0-0. Identical scores almost always mean an upstream feed labeled an
+      // unplayed/in-progress game as "Final" — counting it would push a
+      // leading team over the 4-win threshold prematurely.
+      if (game.home_team_score === game.visitor_team_score) continue;
+
       const homeWon = game.home_team_score > game.visitor_team_score;
       const winningTeamId = homeWon ? home.id : visitor.id;
       if (winningTeamId === series.teamA.id) {

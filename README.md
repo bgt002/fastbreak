@@ -46,7 +46,6 @@ The backend exists because `stats.nba.com` blocks unauthenticated browser/RN cli
 | --- | --- |
 | `backend/main.py` | All endpoints + nba_api adapters + cdn.nba.com / ESPN overlay |
 | `backend/requirements.txt` | `fastapi`, `uvicorn[standard]`, `nba_api` |
-| `backend/Dockerfile` | (legacy from Fly.io setup; not used in current Oracle deployment) |
 
 **Web build / hosting**
 
