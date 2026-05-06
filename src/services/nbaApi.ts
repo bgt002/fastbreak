@@ -335,13 +335,40 @@ export async function getTeams() {
   );
 }
 
-// Live data — explicitly NOT cached so polling and refresh always get fresh
-// scores. Past-date games are technically immutable, but a 30-second TTL
-// keeps tab-switching snappy without stalling live updates anywhere.
+// Per-date game cache with date-aware TTL:
+//   - today: 30s — short so live score polling stays current
+//   - past:  1 hour — already-final games rarely change; persist so revisiting
+//            a previously-viewed date is instant across navigation/sessions
+//   - future: 5 min — schedule could shift but rarely intra-day
+// withCache also falls back to last-known data when the network fetch fails,
+// so flipping back to a previously-loaded date during an upstream blip still
+// shows scores instead of an error state.
+function gamesTtl(date: string): number {
+  const today = formatIsoDate(new Date());
+  if (date === today) return ONE_MIN / 2;
+  if (date < today) return ONE_HOUR;
+  return FIVE_MIN;
+}
+
 export async function getGamesByDate(date: string) {
-  return withCache(`games:${date}`, ONE_MIN / 2, async () => {
-    const response = await request<NbaListResponse<NbaGame>>("/games", { date });
-    return response.data;
+  return withCache(
+    `games:${date}`,
+    gamesTtl(date),
+    async () => {
+      const response = await request<NbaListResponse<NbaGame>>("/games", { date });
+      return response.data;
+    },
+    { persist: true }
+  );
+}
+
+// Fire-and-forget prefetch. Used to warm neighbor dates in the background so
+// scrolling between days feels instant. Failures are swallowed silently —
+// prefetching is best-effort.
+export function prefetchGamesByDate(date: string): void {
+  void getGamesByDate(date).catch(() => {
+    // Network blip on a prefetch is no big deal; the user's actual fetch
+    // (when they navigate to that date) will retry on its own.
   });
 }
 
@@ -399,8 +426,26 @@ export async function getPlayerSeasonStats(season: number, seasonType: "regular"
   );
 }
 
-// Box score isn't cached — it's the same live-data reasoning as /games.
-export async function getBoxScore(gameId: string) {
+// Final games are immutable — cache hard so revisiting a previously-viewed
+// box score (today's earlier games, yesterday's, last week's) is instant. For
+// live games we deliberately skip the cache: the modal's 5s polling keeps the
+// table current and the manual refresh button always hits fresh data, which
+// would feel broken if the cache returned stale rows.
+export async function getBoxScore(
+  gameId: string,
+  gameState?: "live" | "upcoming" | "final"
+) {
+  if (gameState === "final") {
+    return withCache(
+      `boxscore:${gameId}`,
+      ONE_HOUR,
+      async () => {
+        const response = await request<{ data: NbaBoxScore }>("/boxscore", { gameId });
+        return response.data;
+      },
+      { persist: true }
+    );
+  }
   const response = await request<{ data: NbaBoxScore }>("/boxscore", { gameId });
   return response.data;
 }
@@ -440,7 +485,11 @@ export type NbaUpcomingPlayoffGame = {
 type CacheEntry<T> = { data: T; expiresAt: number };
 
 const memCache = new Map<string, CacheEntry<unknown>>();
-const STORAGE_PREFIX = "fb:cache:v1:";
+const MEM_CACHE_MAX = 100;
+// Bump this whenever the JSON shape of any persist:true endpoint changes —
+// or when cached *values* could be wrong (e.g., the playoff-series miscount
+// fix). Old `v1:` entries become orphans; browsers GC them eventually.
+const STORAGE_PREFIX = "fb:cache:v2:";
 
 function readPersistedEntry<T>(key: string): CacheEntry<T> | null {
   if (typeof localStorage === "undefined") return null;
@@ -463,6 +512,22 @@ function writePersistedEntry<T>(key: string, entry: CacheEntry<T>): void {
   }
 }
 
+// Map iteration order is insertion order, so the oldest entries are first.
+// We use that to do FIFO eviction once the cache crosses MEM_CACHE_MAX.
+// Heavy session use (visiting many distinct dates) won't grow unbounded.
+function setMemEntry<T>(key: string, entry: CacheEntry<T>): void {
+  memCache.set(key, entry);
+  if (memCache.size > MEM_CACHE_MAX) {
+    const overflow = memCache.size - MEM_CACHE_MAX;
+    const it = memCache.keys();
+    for (let i = 0; i < overflow; i++) {
+      const next = it.next();
+      if (next.done) break;
+      memCache.delete(next.value);
+    }
+  }
+}
+
 async function withCache<T>(
   key: string,
   ttlMs: number,
@@ -471,24 +536,36 @@ async function withCache<T>(
 ): Promise<T> {
   const now = Date.now();
 
+  // Read both cache layers up front so we can fall back to either on failure.
   const memHit = memCache.get(key) as CacheEntry<T> | undefined;
+  const persisted = options.persist ? readPersistedEntry<T>(key) : null;
+
   if (memHit && memHit.expiresAt > now) {
     return memHit.data;
   }
 
-  if (options.persist) {
-    const persisted = readPersistedEntry<T>(key);
-    if (persisted && persisted.expiresAt > now) {
-      memCache.set(key, persisted);
-      return persisted.data;
-    }
+  if (persisted && persisted.expiresAt > now) {
+    setMemEntry(key, persisted);
+    return persisted.data;
   }
 
-  const data = await fetcher();
-  const entry: CacheEntry<T> = { data, expiresAt: now + ttlMs };
-  memCache.set(key, entry);
-  if (options.persist) writePersistedEntry(key, entry);
-  return data;
+  // Cache is stale or empty — try a fresh fetch. If that fails AND we have
+  // any cached copy (even expired), return it instead of erroring. Keeps the
+  // app showing last-known data through transient upstream blips.
+  try {
+    const data = await fetcher();
+    const entry: CacheEntry<T> = { data, expiresAt: now + ttlMs };
+    setMemEntry(key, entry);
+    if (options.persist) writePersistedEntry(key, entry);
+    return data;
+  } catch (err) {
+    if (memHit) return memHit.data;
+    if (persisted) {
+      setMemEntry(key, persisted);
+      return persisted.data;
+    }
+    throw err;
+  }
 }
 
 const ONE_MIN = 60 * 1000;

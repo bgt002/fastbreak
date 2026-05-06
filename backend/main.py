@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import urllib.request
 from contextlib import asynccontextmanager
@@ -112,7 +113,15 @@ def list_games(date: str = Query(..., description="YYYY-MM-DD")):
     # ScoreboardV2's LineScore isn't reliably populated for past dates, so use LeagueGameFinder
     # for completed games. ScoreboardV2 is still the right source for today/future (live + scheduled).
     if is_past_date:
-        past_games = _list_past_games(parsed)
+        try:
+            past_games = _list_past_games(parsed)
+        except HTTPException:
+            # NBA's LeagueGameFinder is down — fall back to ESPN's scoreboard
+            # for the date so the user still sees something for past dates.
+            # Re-raise the original NBA error only if ESPN comes up empty too.
+            past_games = _games_from_espn(parsed)
+            if not past_games:
+                raise
         # A game from the previous ET day can still be in progress past midnight,
         # so always overlay the live feed — matched games get their actual score
         # and clock; everything else is left as-is.
@@ -153,16 +162,55 @@ def list_games(date: str = Query(..., description="YYYY-MM-DD")):
     # any date — today's live games as well as previous-day games still
     # running past midnight ET.
     _apply_live_overlay(games)
+    # Fetch ESPN's scoreboard once and share it across the tipoff overlay and
+    # the postseason backfill below — both need the same date's events.
+    espn_payload = _fetch_espn_scoreboard(parsed)
     # nba_api marks playoff "if-necessary" games as TBD with no tip-off time
     # until the prior game finishes; ESPN often has the actual scheduled time
     # earlier. Backfill from there when nba_api leaves it blank.
-    _apply_espn_tipoffs(games, parsed)
+    _apply_espn_tipoffs(games, parsed, espn_payload)
+    # ScoreboardV2 doesn't pick up next-round playoff games for ~24-48h after
+    # a series wraps. Backfill any postseason events ESPN knows about so the
+    # scores screen doesn't show "No Games" on real R2/CF/Finals dates.
+    _backfill_postseason_from_espn(games, parsed, espn_payload)
 
     games.sort(key=lambda g: g.get("datetime") or g.get("date") or "")
     return {"data": games}
 
 
-def _apply_espn_tipoffs(games: list[dict[str, Any]], parsed_date: datetime) -> None:
+def _espn_disabled() -> bool:
+    """Emergency kill switch. Set ESPN_DISABLED=1 in the systemd unit env (or
+    `systemctl set-environment ESPN_DISABLED=1 && systemctl restart fastbreak`)
+    to stop hitting ESPN entirely without a code change. Use when ESPN's
+    undocumented public API breaks unexpectedly — postseason backfill /
+    tipoff overlay / upcoming-playoff-games degrade gracefully, the rest of
+    the app keeps working off NBA's APIs alone."""
+    return (os.getenv("ESPN_DISABLED") or "").lower() in ("1", "true", "yes")
+
+
+def _fetch_espn_scoreboard(parsed_date: datetime) -> dict[str, Any] | None:
+    """Fetch ESPN's NBA scoreboard for a single date. Used by both the tipoff
+    overlay and the postseason backfill so /games only hits ESPN once per
+    request."""
+    if _espn_disabled():
+        return None
+    date_str = parsed_date.strftime("%Y%m%d")
+    try:
+        req = urllib.request.Request(
+            f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={date_str}",
+            headers={"Accept": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=8) as r:
+            return json.loads(r.read())
+    except Exception:
+        return None
+
+
+def _apply_espn_tipoffs(
+    games: list[dict[str, Any]],
+    parsed_date: datetime,
+    payload: dict[str, Any] | None = None,
+) -> None:
     # Default the playoff metadata for every game so the field is always present
     # on the frontend (None / False) even if ESPN doesn't recognize the matchup.
     for game in games:
@@ -173,15 +221,9 @@ def _apply_espn_tipoffs(games: list[dict[str, Any]], parsed_date: datetime) -> N
     if not games:
         return
 
-    date_str = parsed_date.strftime("%Y%m%d")
-    try:
-        req = urllib.request.Request(
-            f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={date_str}",
-            headers={"Accept": "application/json"},
-        )
-        with urllib.request.urlopen(req, timeout=8) as r:
-            payload = json.loads(r.read())
-    except Exception:
+    if payload is None:
+        payload = _fetch_espn_scoreboard(parsed_date)
+    if not payload:
         return
 
     by_pair: dict[tuple[str, str], dict[str, Any]] = {}
@@ -224,6 +266,158 @@ def _apply_espn_tipoffs(games: list[dict[str, Any]], parsed_date: datetime) -> N
         game["if_necessary"] = info["if_necessary"]
         game["series_game_number"] = info["series_game_number"]
         game["series_label"] = info["series_label"]
+
+
+def _espn_event_to_game(
+    ev: dict[str, Any], parsed_date: datetime, season_year: int
+) -> dict[str, Any] | None:
+    """Convert one ESPN scoreboard event into our game dict, or None if the
+    event lacks required data. Shared between the postseason backfill in
+    /games and the past-date fallback when stats.nba.com is down."""
+    comps = ev.get("competitions") or []
+    if not comps:
+        return None
+    comp = comps[0]
+
+    competitors = comp.get("competitors") or []
+    away_c = next((c for c in competitors if c.get("homeAway") == "away"), None)
+    home_c = next((c for c in competitors if c.get("homeAway") == "home"), None)
+    if not (away_c and home_c):
+        return None
+    away_abbr = _normalize_espn_abbr((away_c.get("team") or {}).get("abbreviation"))
+    home_abbr = _normalize_espn_abbr((home_c.get("team") or {}).get("abbreviation"))
+    if not (away_abbr and home_abbr):
+        return None
+    visitor_team = next(
+        (t for t in _TEAM_LOOKUP.values() if t["abbreviation"] == away_abbr), None
+    )
+    home_team = next(
+        (t for t in _TEAM_LOOKUP.values() if t["abbreviation"] == home_abbr), None
+    )
+    if not (visitor_team and home_team):
+        return None
+
+    notes_text = " ".join((n.get("headline") or "") for n in (comp.get("notes") or []))
+    is_postseason = bool(
+        re.search(
+            r"Round|Final|Conference|Playoff|Semifinal|Quarterfinal",
+            notes_text,
+            re.IGNORECASE,
+        )
+    )
+    time_valid = bool(comp.get("timeValid"))
+    series_match = re.search(r"Game\s+(\d+)", notes_text, re.IGNORECASE)
+    is_if_necessary = "if necessary" in notes_text.lower()
+
+    status_obj = comp.get("status") or {}
+    status_type = status_obj.get("type") or {}
+    completed = bool(status_type.get("completed"))
+    state = status_type.get("state")  # "pre" / "in" / "post"
+    period = int(status_obj.get("period") or 0)
+    clock_raw = status_obj.get("displayClock")
+
+    if completed or state == "post":
+        status_text = "Final"
+        period_value = max(period, 4)
+    elif state == "in":
+        if period and clock_raw:
+            status_text = f"Q{period} {clock_raw}" if period <= 4 else f"OT{period - 4} {clock_raw}"
+        else:
+            status_text = (status_type.get("shortDetail") or "Live").strip()
+        period_value = period
+    else:
+        status_text = ""
+        period_value = 0
+
+    return {
+        "id": f"espn-{ev.get('id')}",
+        "date": parsed_date.strftime("%Y-%m-%d"),
+        "status": status_text,
+        "period": period_value,
+        "time": None,
+        "datetime": ev.get("date"),
+        "tip_off": ev.get("date") if time_valid else None,
+        "season": season_year,
+        "postseason": is_postseason,
+        "home_team": home_team,
+        "visitor_team": visitor_team,
+        "home_team_score": _safe_int(home_c.get("score")),
+        "visitor_team_score": _safe_int(away_c.get("score")),
+        "if_necessary": is_if_necessary,
+        "series_game_number": int(series_match.group(1)) if series_match else None,
+        "series_label": _format_series_label(notes_text) if is_postseason else None,
+    }
+
+
+def _backfill_postseason_from_espn(
+    games: list[dict[str, Any]],
+    parsed_date: datetime,
+    payload: dict[str, Any] | None = None,
+) -> None:
+    """ScoreboardV2 lags ESPN by 24-48h on postseason scheduling — once R1
+    wraps up, ESPN publishes R2 dates almost immediately while NBA's official
+    feed catches up days later. Augment the games list with any postseason
+    events ESPN knows about that ScoreboardV2 hasn't picked up yet so the
+    scores screen doesn't show 'No Games' on a real R2 date."""
+    if payload is None:
+        payload = _fetch_espn_scoreboard(parsed_date)
+    if not payload:
+        return
+
+    # Sort so the dedupe key is direction-insensitive — guards against the
+    # edge case where ESPN and ScoreboardV2 disagree on which team is home
+    # (e.g. neutral-site games) and we'd otherwise add a duplicate.
+    existing_pairs = {
+        tuple(
+            sorted(
+                [
+                    (g.get("visitor_team") or {}).get("abbreviation") or "",
+                    (g.get("home_team") or {}).get("abbreviation") or "",
+                ]
+            )
+        )
+        for g in games
+    }
+    season_year = parsed_date.year if parsed_date.month >= 10 else parsed_date.year - 1
+
+    for ev in payload.get("events") or []:
+        game = _espn_event_to_game(ev, parsed_date, season_year)
+        if not game:
+            continue
+        # Only augment for postseason events. Regular-season ScoreboardV2 is
+        # reliable; fabricating extra entries there risks duplicating games
+        # whose ids we don't share with ESPN.
+        if not game["postseason"]:
+            continue
+        pair = tuple(
+            sorted(
+                [
+                    game["visitor_team"]["abbreviation"],
+                    game["home_team"]["abbreviation"],
+                ]
+            )
+        )
+        if pair in existing_pairs:
+            continue
+        games.append(game)
+
+
+def _games_from_espn(
+    parsed_date: datetime, payload: dict[str, Any] | None = None
+) -> list[dict[str, Any]]:
+    """Build a complete games list from ESPN's scoreboard for a date. Used as
+    a fallback when NBA's stats API is unreachable for past dates."""
+    if payload is None:
+        payload = _fetch_espn_scoreboard(parsed_date)
+    if not payload:
+        return []
+    season_year = parsed_date.year if parsed_date.month >= 10 else parsed_date.year - 1
+    games: list[dict[str, Any]] = []
+    for ev in payload.get("events") or []:
+        game = _espn_event_to_game(ev, parsed_date, season_year)
+        if game:
+            games.append(game)
+    return games
 
 
 _ORDINAL_TO_WORD = {"1st": "First", "2nd": "Second", "3rd": "Third", "4th": "Fourth"}
@@ -338,6 +532,8 @@ _ESPN_STATE_TO_ID = {"pre": 1, "in": 2, "post": 3}
 
 def _fetch_espn_states() -> dict[str, dict[str, Any]]:
     """Returns live state keyed by NBA gameId, derived from team-pair matching."""
+    if _espn_disabled():
+        return {}
     try:
         req = urllib.request.Request(
             "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard",
@@ -530,6 +726,8 @@ def _pick_fresher_boxscore(
 
 
 def _try_espn_boxscore(game_id: str) -> dict[str, Any] | None:
+    if _espn_disabled():
+        return None
     espn_event_id = _resolve_espn_event_id(game_id)
     if not espn_event_id:
         return None
@@ -616,6 +814,11 @@ def _try_espn_boxscore(game_id: str) -> dict[str, Any] | None:
 
 
 def _resolve_espn_event_id(game_id: str) -> str | None:
+    # Games backfilled from ESPN already carry their ESPN event id with an
+    # "espn-" prefix; just strip and return it. (cdn.nba.com doesn't know about
+    # them yet — the whole point of the prefix.)
+    if game_id.startswith("espn-"):
+        return game_id[len("espn-"):]
     cdn_pair_to_id = _cdn_pair_index()
     nba_pair = next((pair for pair, gid in cdn_pair_to_id.items() if gid == game_id), None)
     if not nba_pair:
@@ -624,6 +827,8 @@ def _resolve_espn_event_id(game_id: str) -> str | None:
 
 
 def _espn_pair_index() -> dict[tuple[str, str], str]:
+    if _espn_disabled():
+        return {}
     try:
         req = urllib.request.Request(
             "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard",
@@ -951,6 +1156,19 @@ def _get_player_index(season: int) -> dict[int, dict[str, Any]]:
 
 @app.get("/standings")
 def list_standings(season: int = Query(..., description="Starting year, e.g., 2025 for 2025-26")):
+    # Try NBA first (richer per-team metadata). Fall back to ESPN if upstream
+    # fails — ESPN's shape covers all the fields the frontend renders, so the
+    # standings table stays populated even during a stats.nba.com outage.
+    try:
+        return {"data": _standings_from_nba(season)}
+    except HTTPException:
+        espn_data = _standings_from_espn(season)
+        if espn_data:
+            return {"data": espn_data}
+        raise
+
+
+def _standings_from_nba(season: int) -> list[dict[str, Any]]:
     season_str = _format_season(season)
     st = _call_nba(lambda: leaguestandingsv3.LeagueStandingsV3(season=season_str, timeout=30))
     rows = _rows_to_dicts(st.standings.get_dict())
@@ -982,7 +1200,76 @@ def list_standings(season: int = Query(..., description="Starting year, e.g., 20
             }
         )
 
-    return {"data": standings}
+    return standings
+
+
+def _standings_from_espn(season: int) -> list[dict[str, Any]] | None:
+    """ESPN-backed standings. Used as a fallback when stats.nba.com is down.
+    ESPN's season parameter is the season's END year (2026 = 2025-26)."""
+    if _espn_disabled():
+        return None
+    end_year = season + 1
+    url = (
+        "https://site.web.api.espn.com/apis/v2/sports/basketball/nba/standings"
+        f"?region=us&lang=en&contentorigin=espn&type=0&level=3"
+        f"&sort=playoffseed%3Aasc&season={end_year}"
+    )
+    try:
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            payload = json.loads(r.read())
+    except Exception:
+        return None
+
+    standings: list[dict[str, Any]] = []
+    for conf in payload.get("children") or []:
+        for division in conf.get("children") or []:
+            for entry in (division.get("standings") or {}).get("entries") or []:
+                team = entry.get("team") or {}
+                abbr = _normalize_espn_abbr(team.get("abbreviation"))
+                team_meta = next(
+                    (t for t in _TEAM_LOOKUP.values() if t["abbreviation"] == abbr),
+                    None,
+                )
+                if not team_meta:
+                    continue
+                stat_map = {
+                    s.get("name"): s
+                    for s in (entry.get("stats") or [])
+                    if s.get("name")
+                }
+
+                def _val(name: str, default: float = 0.0) -> float:
+                    s = stat_map.get(name) or {}
+                    try:
+                        return float(s.get("value") if s.get("value") is not None else default)
+                    except (TypeError, ValueError):
+                        return default
+
+                def _disp(name: str) -> str:
+                    s = stat_map.get(name) or {}
+                    return str(s.get("displayValue") or s.get("summary") or "").strip()
+
+                standings.append(
+                    {
+                        "team": team_meta,
+                        "wins": int(_val("wins")),
+                        "losses": int(_val("losses")),
+                        "conference_rank": int(_val("playoffSeed")),
+                        "conference_record": _disp("vsconf"),
+                        "division_rank": int(_val("divisionStanding")),
+                        "division_record": _disp("vsdiv"),
+                        "home_record": _disp("home"),
+                        "road_record": _disp("road"),
+                        "last_ten": _disp("lasttengames"),
+                        "streak": _disp("streak"),
+                        "points_pg": _val("avgPointsFor"),
+                        "opp_points_pg": _val("avgPointsAgainst"),
+                        "diff_points_pg": _val("differential"),
+                        "season": season,
+                    }
+                )
+    return standings or None
 
 
 @app.get("/playoffs")
@@ -1004,18 +1291,19 @@ def list_playoff_games(season: int = Query(..., description="Starting year, e.g.
         if not game_id:
             continue
 
-        # LeagueGameLog includes rows for live and (sometimes) scheduled games
-        # whose WL field is still blank. Counting those as "Final" inflates
-        # series win totals — e.g., a live Game 4 with the leader at +1
-        # propagates into the bracket as a series-clinching win. Only consider
-        # rows that have an actual W/L recorded.
-        if not (row.get("WL") or "").strip():
-            continue
-
         team_id = row.get("TEAM_ID")
         team_meta = _TEAM_LOOKUP.get(team_id)
         if not team_meta:
             continue
+
+        # WL is set ("W"/"L") only after a game actually ends. In-progress
+        # games (and very recently scheduled rows) come back with WL=null.
+        # We include both — finished rows get status="Final" so the frontend
+        # counts them toward series wins; in-progress rows get a neutral
+        # status so they show in the bracket as part of a live R2/CF series
+        # without inflating the win total. The live overlay below upgrades
+        # the in-progress rows with current period/clock/score.
+        wl = (row.get("WL") or "").strip()
 
         is_home = "vs." in (row.get("MATCHUP") or "")
         team_score = int(row.get("PTS") or 0)
@@ -1026,8 +1314,8 @@ def list_playoff_games(season: int = Query(..., description="Starting year, e.g.
             {
                 "id": game_id,
                 "date": date_str,
-                "status": "Final",
-                "period": 4,
+                "status": "Final" if wl else "",
+                "period": 4 if wl else 0,
                 "time": None,
                 "datetime": date_str,
                 "season": season,
@@ -1047,6 +1335,11 @@ def list_playoff_games(season: int = Query(..., description="Starting year, e.g.
             existing["visitor_team_score"] = team_score
 
     games = [g for g in games_by_id.values() if g["home_team"] and g["visitor_team"]]
+    # In-progress rows (WL=null) end up here with status="" and period=0. Pull
+    # current state from cdn.nba.com so the frontend's getGameState reports
+    # "live" instead of "upcoming" and the bracket reflects what's happening
+    # right now. Finished rows are also overlaid; their status stays "Final".
+    _apply_live_overlay(games)
     games.sort(key=lambda g: g.get("date") or "")
     return {"data": games}
 
@@ -1080,7 +1373,7 @@ def upcoming_playoff_games(
         comp = comps[0]
         notes_text = " ".join((n.get("headline") or "") for n in (comp.get("notes") or []))
         # Postseason games carry round/finals/conference in their note headlines.
-        if not re.search(r"Round|Final|Conference", notes_text, re.IGNORECASE):
+        if not re.search(r"Round|Final|Conference|Playoff|Semifinal|Quarterfinal", notes_text, re.IGNORECASE):
             continue
 
         competitors = comp.get("competitors") or []
@@ -1114,6 +1407,15 @@ def upcoming_playoff_games(
 
 @app.get("/boxscore")
 def get_boxscore(game_id: str = Query(..., alias="gameId", description="Full 10-char NBA game ID, e.g., 0022500100")):
+    # ESPN-backfilled games (from the postseason backfill in /games) won't
+    # exist in cdn.nba.com or stats.nba.com — go directly to ESPN's summary
+    # endpoint and skip the dead lookups.
+    if game_id.startswith("espn-"):
+        espn_data = _try_espn_boxscore(game_id)
+        if espn_data:
+            return {"data": espn_data}
+        raise HTTPException(status_code=404, detail="Box score not available for this game yet")
+
     # cdn.nba.com's live boxscore populates in realtime during games; the
     # stats.nba.com V2 endpoint only fills in well after the final buzzer.
     # Both can stall mid-game, so we try ESPN as a parallel source and pick

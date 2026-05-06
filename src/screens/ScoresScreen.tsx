@@ -29,6 +29,7 @@ import {
   getGameState,
   getPostseasonGames,
   getStandings,
+  prefetchGamesByDate,
   teamLogoUri,
   type NbaGame,
   type NbaTeam
@@ -123,6 +124,32 @@ export function ScoresScreen() {
     const interval = setInterval(silentReload, 5000);
     return () => clearInterval(interval);
   }, [selectedDate, today, hasLiveGame, silentReload]);
+
+  // Warm the cache for adjacent dates so paging the week strip feels instant.
+  // Runs during browser idle time (web) or on a short timer (native), so we
+  // never block the current render or step on the live-poll above. The cache
+  // layer dedupes — if a neighbor was already fetched recently, this is a
+  // no-op. Only triggers after the current date has loaded so prefetches
+  // don't compete with the user's actual fetch.
+  useEffect(() => {
+    if (loading) return;
+    const neighbors = [shiftDate(selectedDate, -1), shiftDate(selectedDate, 1)];
+    const idle =
+      typeof window !== "undefined" && typeof window.requestIdleCallback === "function"
+        ? window.requestIdleCallback
+        : null;
+    const handles: Array<{ cancel: () => void }> = [];
+    for (const date of neighbors) {
+      if (idle) {
+        const id = idle(() => prefetchGamesByDate(date), { timeout: 2000 });
+        handles.push({ cancel: () => window.cancelIdleCallback?.(id) });
+      } else {
+        const t = setTimeout(() => prefetchGamesByDate(date), 250);
+        handles.push({ cancel: () => clearTimeout(t) });
+      }
+    }
+    return () => handles.forEach((h) => h.cancel());
+  }, [selectedDate, loading]);
 
   const handlePullRefresh = useCallback(async () => {
     setRefreshing(true);
