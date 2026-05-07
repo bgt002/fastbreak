@@ -157,11 +157,6 @@ def list_games(date: str = Query(..., description="YYYY-MM-DD")):
             _build_game(game_id, parsed, header, home_team, visitor_team, home_line, visitor_line, False)
         )
 
-    # ScoreboardV2 lags significantly for live games, so overlay realtime data
-    # from cdn.nba.com (the same feed the official NBA app uses). Apply for
-    # any date — today's live games as well as previous-day games still
-    # running past midnight ET.
-    _apply_live_overlay(games)
     # Fetch ESPN's scoreboard once and share it across the tipoff overlay and
     # the postseason backfill below — both need the same date's events.
     espn_payload = _fetch_espn_scoreboard(parsed)
@@ -171,8 +166,14 @@ def list_games(date: str = Query(..., description="YYYY-MM-DD")):
     _apply_espn_tipoffs(games, parsed, espn_payload)
     # ScoreboardV2 doesn't pick up next-round playoff games for ~24-48h after
     # a series wraps. Backfill any postseason events ESPN knows about so the
-    # scores screen doesn't show "No Games" on real R2/CF/Finals dates.
+    # scores screen doesn't show "No Games" on real R2/CF/Finals dates. The
+    # backfill upgrades ids to the NBA gameId when cdn.nba.com has the matchup,
+    # which the live overlay below then reconciles with current period/clock.
     _backfill_postseason_from_espn(games, parsed, espn_payload)
+    # Live overlay after backfill so newly-added postseason games (now carrying
+    # NBA gameIds when possible) also get their realtime period/clock/score
+    # from cdn.nba.com — same feed the official NBA app uses.
+    _apply_live_overlay(games)
 
     games.sort(key=lambda g: g.get("datetime") or g.get("date") or "")
     return {"data": games}
@@ -380,6 +381,14 @@ def _backfill_postseason_from_espn(
     }
     season_year = parsed_date.year if parsed_date.month >= 10 else parsed_date.year - 1
 
+    # cdn.nba.com publishes today's games with their NBA gameId and team
+    # tricodes — and updates faster than ScoreboardV2 for live games. If a
+    # backfilled matchup is in cdn, we swap the "espn-..." id for the real
+    # NBA gameId so /boxscore can later fetch from cdn (which exposes the
+    # on-court flag the green-dot UI relies on) instead of ESPN's summary
+    # endpoint (which doesn't).
+    cdn_pairs = _cdn_pair_index()
+
     for ev in payload.get("events") or []:
         game = _espn_event_to_game(ev, parsed_date, season_year)
         if not game:
@@ -389,16 +398,17 @@ def _backfill_postseason_from_espn(
         # whose ids we don't share with ESPN.
         if not game["postseason"]:
             continue
-        pair = tuple(
-            sorted(
-                [
-                    game["visitor_team"]["abbreviation"],
-                    game["home_team"]["abbreviation"],
-                ]
-            )
-        )
+        away = game["visitor_team"]["abbreviation"]
+        home = game["home_team"]["abbreviation"]
+        pair = tuple(sorted([away, home]))
         if pair in existing_pairs:
             continue
+        # Prefer the NBA gameId when cdn.nba.com knows the matchup. Falls
+        # through to the espn- prefix for genuinely-future games cdn hasn't
+        # picked up yet.
+        nba_id = cdn_pairs.get((away, home))
+        if nba_id:
+            game["id"] = nba_id
         games.append(game)
 
 
