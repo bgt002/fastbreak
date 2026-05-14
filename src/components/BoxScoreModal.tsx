@@ -168,8 +168,8 @@ export function BoxScoreContent({ game, onClose }: { game: NbaGame; onClose?: ()
   const isUpcoming = state === "upcoming";
   const isLive = state === "live";
   const { data, error, loading, reload, silentReload } = useAsyncData(
-    () => (isUpcoming ? Promise.resolve(null) : getBoxScore(game.id, state)),
-    [game.id, isUpcoming, state]
+    () => (isUpcoming ? Promise.resolve(null) : getBoxScore(game, state)),
+    [game.id, game.espn_event_id, isUpcoming, state]
   );
 
   useEffect(() => {

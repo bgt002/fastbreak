@@ -248,6 +248,7 @@ def _apply_espn_tipoffs(
         # ET, e.g. "T04:00Z"). Treat the time as unknown in that case.
         time_valid = bool(comps[0].get("timeValid"))
         by_pair[(away_abbr, home_abbr)] = {
+            "espn_event_id": str(ev.get("id") or comps[0].get("id") or ""),
             "tip_off": ev.get("date") if time_valid else None,
             "if_necessary": "if necessary" in notes_text.lower(),
             "series_game_number": int(match.group(1)) if match else None,
@@ -262,6 +263,8 @@ def _apply_espn_tipoffs(
         info = by_pair.get((away_abbr, home_abbr))
         if not info:
             continue
+        if info["espn_event_id"]:
+            game["espn_event_id"] = info["espn_event_id"]
         if not game.get("tip_off") and info["tip_off"]:
             game["tip_off"] = info["tip_off"]
         game["if_necessary"] = info["if_necessary"]
@@ -332,6 +335,7 @@ def _espn_event_to_game(
 
     return {
         "id": f"espn-{ev.get('id')}",
+        "espn_event_id": str(ev.get("id") or comp.get("id") or ""),
         "date": parsed_date.strftime("%Y-%m-%d"),
         "status": status_text,
         "period": period_value,
@@ -738,7 +742,11 @@ def _try_live_boxscore(game_id: str) -> dict[str, Any] | None:
     if not teams:
         return None
 
-    return {"game_id": game_id, "teams": teams}
+    data = {"game_id": game_id, "teams": teams}
+    if not _boxscore_has_action(data):
+        return None
+
+    return data
 
 
 def _pick_fresher_boxscore(
@@ -753,14 +761,47 @@ def _pick_fresher_boxscore(
     return a if a_total >= b_total else b
 
 
-def _try_espn_boxscore(game_id: str) -> dict[str, Any] | None:
+def _boxscore_has_action(data: dict[str, Any]) -> bool:
+    for team in data.get("teams") or []:
+        if _safe_int(team.get("score")) > 0:
+            return True
+        for period in team.get("periods") or []:
+            if _safe_int(period.get("score")) > 0:
+                return True
+        for player in team.get("players") or []:
+            if player.get("minutes") not in (None, "", "0:00", "—"):
+                return True
+            stat_total = sum(
+                _safe_int(player.get(key))
+                for key in (
+                    "points",
+                    "rebounds",
+                    "assists",
+                    "steals",
+                    "blocks",
+                    "turnovers",
+                    "fouls",
+                    "fgm",
+                    "fga",
+                    "fg3m",
+                    "fg3a",
+                    "ftm",
+                    "fta",
+                )
+            )
+            if stat_total > 0:
+                return True
+    return False
+
+
+def _try_espn_boxscore(game_id: str, espn_event_id: str | None = None) -> dict[str, Any] | None:
     if _espn_disabled():
         return None
-    espn_event_id = _resolve_espn_event_id(game_id)
-    if not espn_event_id:
+    event_id = (espn_event_id or "").strip() or _resolve_espn_event_id(game_id)
+    if not event_id:
         return None
     try:
-        url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event={espn_event_id}"
+        url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event={event_id}"
         req = urllib.request.Request(url, headers={"Accept": "application/json"})
         with urllib.request.urlopen(req, timeout=10) as r:
             payload = json.loads(r.read())
@@ -838,7 +879,8 @@ def _try_espn_boxscore(game_id: str) -> dict[str, Any] | None:
     teams = [t for t in teams_by_abbr.values() if t["players"] or t["score"] > 0]
     if not teams:
         return None
-    return {"game_id": game_id, "teams": teams}
+    data = {"game_id": game_id, "teams": teams}
+    return data if _boxscore_has_action(data) else None
 
 
 def _resolve_espn_event_id(game_id: str) -> str | None:
@@ -1434,12 +1476,15 @@ def upcoming_playoff_games(
 
 
 @app.get("/boxscore")
-def get_boxscore(game_id: str = Query(..., alias="gameId", description="Full 10-char NBA game ID, e.g., 0022500100")):
+def get_boxscore(
+    game_id: str = Query(..., alias="gameId", description="Full 10-char NBA game ID, e.g., 0022500100"),
+    espn_event_id: str | None = Query(None, alias="espnEventId"),
+):
     # ESPN-backfilled games (from the postseason backfill in /games) won't
     # exist in cdn.nba.com or stats.nba.com — go directly to ESPN's summary
     # endpoint and skip the dead lookups.
     if game_id.startswith("espn-"):
-        espn_data = _try_espn_boxscore(game_id)
+        espn_data = _try_espn_boxscore(game_id, espn_event_id)
         if espn_data:
             return {"data": espn_data}
         raise HTTPException(status_code=404, detail="Box score not available for this game yet")
@@ -1449,7 +1494,7 @@ def get_boxscore(game_id: str = Query(..., alias="gameId", description="Full 10-
     # Both can stall mid-game, so we try ESPN as a parallel source and pick
     # whichever has the more advanced totals.
     cdn_data = _try_live_boxscore(game_id)
-    espn_data = _try_espn_boxscore(game_id)
+    espn_data = _try_espn_boxscore(game_id, espn_event_id)
     chosen = _pick_fresher_boxscore(cdn_data, espn_data)
     if chosen:
         return {"data": chosen}
@@ -1511,7 +1556,10 @@ def get_boxscore(game_id: str = Query(..., alias="gameId", description="Full 10-
 
     _apply_v2_line_score(game_id, teams_by_id)
 
-    return {"data": {"game_id": game_id, "teams": list(teams_by_id.values())}}
+    data = {"game_id": game_id, "teams": list(teams_by_id.values())}
+    if not _boxscore_has_action(data):
+        raise HTTPException(status_code=404, detail="Box score not available for this game yet")
+    return {"data": data}
 
 
 def _apply_v2_line_score(game_id: str, teams_by_id: dict[int, dict[str, Any]]) -> None:
@@ -1578,6 +1626,7 @@ def _build_game(
         "period": int(live_period) if live_period is not None else 0,
         "time": live_time,
         "datetime": header.get("GAME_DATE_EST"),
+        "espn_event_id": None,
         "tip_off": tip_off,
         "season": int(header.get("SEASON") or parsed_date.year),
         "postseason": isinstance(game_id, str) and game_id.startswith("004"),

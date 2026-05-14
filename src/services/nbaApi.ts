@@ -10,6 +10,7 @@ export type NbaTeam = {
 
 export type NbaGame = {
   id: string;
+  espn_event_id?: string | null;
   date: string;
   season: number;
   status: string;
@@ -432,21 +433,22 @@ export async function getPlayerSeasonStats(season: number, seasonType: "regular"
 // table current and the manual refresh button always hits fresh data, which
 // would feel broken if the cache returned stale rows.
 export async function getBoxScore(
-  gameId: string,
+  game: Pick<NbaGame, "id" | "espn_event_id">,
   gameState?: "live" | "upcoming" | "final"
 ) {
+  const params = { gameId: game.id, espnEventId: game.espn_event_id ?? undefined };
   if (gameState === "final") {
     return withCache(
-      `boxscore:${gameId}`,
+      `boxscore:${game.id}:${game.espn_event_id ?? ""}`,
       ONE_HOUR,
       async () => {
-        const response = await request<{ data: NbaBoxScore }>("/boxscore", { gameId });
+        const response = await request<{ data: NbaBoxScore }>("/boxscore", params);
         return response.data;
       },
       { persist: true }
     );
   }
-  const response = await request<{ data: NbaBoxScore }>("/boxscore", { gameId });
+  const response = await request<{ data: NbaBoxScore }>("/boxscore", params);
   return response.data;
 }
 
