@@ -117,13 +117,14 @@ export function ScoresScreen() {
   }, [openGame, games]);
 
   const hasLiveGame = games?.some((game) => getGameState(game) === "live") ?? false;
+  const hasUnfinishedGame = games?.some((game) => getGameState(game) !== "final") ?? false;
   useEffect(() => {
-    if (selectedDate !== today || !hasLiveGame) {
+    if (selectedDate !== today || !hasUnfinishedGame) {
       return;
     }
-    const interval = setInterval(silentReload, 5000);
+    const interval = setInterval(silentReload, hasLiveGame ? 5000 : 30000);
     return () => clearInterval(interval);
-  }, [selectedDate, today, hasLiveGame, silentReload]);
+  }, [selectedDate, today, hasLiveGame, hasUnfinishedGame, silentReload]);
 
   // Warm the cache for adjacent dates so paging the week strip feels instant.
   // Runs during browser idle time (web) or on a short timer (native), so we

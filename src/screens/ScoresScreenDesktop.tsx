@@ -98,11 +98,12 @@ export function ScoresScreenDesktop() {
   );
 
   const hasLiveGame = games?.some((g) => getGameState(g) === "live") ?? false;
+  const hasUnfinishedGame = games?.some((g) => getGameState(g) !== "final") ?? false;
   useEffect(() => {
-    if (selectedDate !== today || !hasLiveGame) return;
-    const id = setInterval(silentReload, 5000);
+    if (selectedDate !== today || !hasUnfinishedGame) return;
+    const id = setInterval(silentReload, hasLiveGame ? 5000 : 30000);
     return () => clearInterval(id);
-  }, [selectedDate, today, hasLiveGame, silentReload]);
+  }, [selectedDate, today, hasLiveGame, hasUnfinishedGame, silentReload]);
 
   const dateOptions = useMemo(() => buildDateStrip(windowStart, today), [windowStart, today]);
 

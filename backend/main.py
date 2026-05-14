@@ -173,7 +173,7 @@ def list_games(date: str = Query(..., description="YYYY-MM-DD")):
     # Live overlay after backfill so newly-added postseason games (now carrying
     # NBA gameIds when possible) also get their realtime period/clock/score
     # from cdn.nba.com — same feed the official NBA app uses.
-    _apply_live_overlay(games)
+    _apply_live_overlay(games, espn_payload)
 
     games.sort(key=lambda g: g.get("datetime") or g.get("date") or "")
     return {"data": games}
@@ -447,12 +447,19 @@ def _format_series_label(notes_text: str) -> str | None:
     return label
 
 
-def _apply_live_overlay(games: list[dict[str, Any]]) -> None:
-    live_states = _fetch_live_states()
-    if not live_states:
+def _apply_live_overlay(
+    games: list[dict[str, Any]],
+    espn_payload: dict[str, Any] | None = None,
+) -> None:
+    espn_pair_states = _fetch_espn_pair_states(espn_payload)
+    live_states = _fetch_live_states(espn_pair_states)
+    if not live_states and not espn_pair_states:
         return
     for game in games:
-        live = live_states.get(game["id"])
+        away_abbr = (game.get("visitor_team") or {}).get("abbreviation")
+        home_abbr = (game.get("home_team") or {}).get("abbreviation")
+        pair_live = espn_pair_states.get((away_abbr, home_abbr)) if away_abbr and home_abbr else None
+        live = _pick_fresher(live_states.get(game["id"]), pair_live)
         if not live:
             continue
         status_id = live["status_id"]
@@ -472,11 +479,13 @@ def _apply_live_overlay(games: list[dict[str, Any]]) -> None:
             game["visitor_team_score"] = live["away_score"]
 
 
-def _fetch_live_states() -> dict[str, dict[str, Any]]:
+def _fetch_live_states(
+    espn_pair_states: dict[tuple[str, str], dict[str, Any]] | None = None,
+) -> dict[str, dict[str, Any]]:
     # cdn.nba.com is the official feed but periodically gets stuck (especially
     # during quarter breaks), while ESPN's public scoreboard is reliably fresh.
     # Build state from both and prefer whichever has the more advanced game.
-    espn = _fetch_espn_states()
+    espn = _fetch_espn_states(espn_pair_states)
     cdn = _fetch_cdn_states()
     keys = set(espn.keys()) | set(cdn.keys())
     out: dict[str, dict[str, Any]] = {}
@@ -540,19 +549,36 @@ _ESPN_TO_NBA_ABBR = {
 _ESPN_STATE_TO_ID = {"pre": 1, "in": 2, "post": 3}
 
 
-def _fetch_espn_states() -> dict[str, dict[str, Any]]:
+def _fetch_espn_states(
+    pair_states: dict[tuple[str, str], dict[str, Any]] | None = None,
+) -> dict[str, dict[str, Any]]:
     """Returns live state keyed by NBA gameId, derived from team-pair matching."""
+    by_pair = pair_states if pair_states is not None else _fetch_espn_pair_states()
+
+    # Re-key to NBA gameId so it merges cleanly with the cdn.nba.com state map.
+    cdn_pair_to_id = _cdn_pair_index()
+    out: dict[str, dict[str, Any]] = {}
+    for pair, state in by_pair.items():
+        gid = cdn_pair_to_id.get(pair)
+        if gid:
+            out[gid] = state
+    return out
+
+
+def _fetch_espn_pair_states(payload: dict[str, Any] | None = None) -> dict[tuple[str, str], dict[str, Any]]:
+    """Returns live state keyed by (away_abbr, home_abbr)."""
     if _espn_disabled():
         return {}
-    try:
-        req = urllib.request.Request(
-            "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard",
-            headers={"Accept": "application/json"},
-        )
-        with urllib.request.urlopen(req, timeout=8) as r:
-            payload = json.loads(r.read())
-    except Exception:
-        return {}
+    if payload is None:
+        try:
+            req = urllib.request.Request(
+                "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard",
+                headers={"Accept": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=8) as r:
+                payload = json.loads(r.read())
+        except Exception:
+            return {}
 
     by_pair: dict[tuple[str, str], dict[str, Any]] = {}
     for ev in payload.get("events") or []:
@@ -590,15 +616,7 @@ def _fetch_espn_states() -> dict[str, dict[str, Any]]:
             "away_score": _safe_int(away.get("score")),
             "_pair": (away_abbr, home_abbr),
         }
-
-    # Re-key to NBA gameId so it merges cleanly with the cdn.nba.com state map.
-    cdn_pair_to_id = _cdn_pair_index()
-    out: dict[str, dict[str, Any]] = {}
-    for pair, state in by_pair.items():
-        gid = cdn_pair_to_id.get(pair)
-        if gid:
-            out[gid] = state
-    return out
+    return by_pair
 
 
 def _normalize_espn_abbr(abbr: str | None) -> str | None:
