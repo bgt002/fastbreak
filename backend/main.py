@@ -173,7 +173,7 @@ def list_games(date: str = Query(..., description="YYYY-MM-DD")):
     # Live overlay after backfill so newly-added postseason games (now carrying
     # NBA gameIds when possible) also get their realtime period/clock/score
     # from cdn.nba.com — same feed the official NBA app uses.
-    _apply_live_overlay(games, espn_payload)
+    _apply_live_overlay(games, espn_payload, match_by_pair=True)
 
     games.sort(key=lambda g: g.get("datetime") or g.get("date") or "")
     return {"data": games}
@@ -454,15 +454,16 @@ def _format_series_label(notes_text: str) -> str | None:
 def _apply_live_overlay(
     games: list[dict[str, Any]],
     espn_payload: dict[str, Any] | None = None,
+    match_by_pair: bool = False,
 ) -> None:
-    espn_pair_states = _fetch_espn_pair_states(espn_payload)
+    espn_pair_states = _fetch_espn_pair_states(espn_payload) if match_by_pair else None
     live_states = _fetch_live_states(espn_pair_states)
     if not live_states and not espn_pair_states:
         return
     for game in games:
         away_abbr = (game.get("visitor_team") or {}).get("abbreviation")
         home_abbr = (game.get("home_team") or {}).get("abbreviation")
-        pair_live = espn_pair_states.get((away_abbr, home_abbr)) if away_abbr and home_abbr else None
+        pair_live = espn_pair_states.get((away_abbr, home_abbr)) if espn_pair_states and away_abbr and home_abbr else None
         live = _pick_fresher(live_states.get(game["id"]), pair_live)
         if not live:
             continue

@@ -491,7 +491,7 @@ const MEM_CACHE_MAX = 100;
 // Bump this whenever the JSON shape of any persist:true endpoint changes —
 // or when cached *values* could be wrong (e.g., the playoff-series miscount
 // fix). Old `v1:` entries become orphans; browsers GC them eventually.
-const STORAGE_PREFIX = "fb:cache:v2:";
+const STORAGE_PREFIX = "fb:cache:v3:";
 
 function readPersistedEntry<T>(key: string): CacheEntry<T> | null {
   if (typeof localStorage === "undefined") return null;
